@@ -21,6 +21,7 @@ public final class BudgetService {
     public func visibleItems(from start: String, through end: String) throws -> [Item] {
         try database.read { db in try Item.fetchAll(db, sql: "SELECT * FROM items WHERE deleted=0 AND date BETWEEN ? AND ? ORDER BY date, id", arguments: [start, end]) }
     }
+    public func adjustments() throws -> [BalanceAdjustment] { try database.read { db in try BalanceAdjustment.fetchAll(db, sql: "SELECT * FROM balance_adjustments ORDER BY date, id") } }
     public func item(id: Int64) throws -> Item? { try database.read { db in try Item.fetchOne(db, key: id) } }
     public func categories() throws -> [Category] { try database.read { db in try Category.fetchAll(db, sql: "SELECT * FROM categories ORDER BY sort_order, id") } }
     public func rules() throws -> [RecurringRule] { try database.read { db in try RecurringRule.fetchAll(db, sql: "SELECT * FROM recurring_rules ORDER BY anchor_date, id") } }
@@ -37,6 +38,20 @@ public final class BudgetService {
     }
     public func setPaid(id: Int64, paid: Bool, paidDate: String? = nil) throws {
         try database.write { db in try db.execute(sql: "UPDATE items SET status=?, paid_date=?, updated_at=? WHERE id=?", arguments: [paid ? ItemStatus.paid.rawValue : ItemStatus.planned.rawValue, paid ? (paidDate ?? today()) : nil, now(), id]) }
+    }
+    public func payPeriodSummaries(today: String) throws -> [PayPeriodSummary] {
+        let items = try visibleItems(from: "0001-01-01", through: "9999-12-31")
+        let salaryCategories = Set(try categories().compactMap { category in
+            (category.incomeType == "salary" || category.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "salary") ? category.id : nil
+        })
+        let includeOtherIncome = (try setting("include_other_income_in_pay_periods")) != "false"
+        return PlanningEngine.summaries(periods: PlanningEngine.deriveSalaryPeriods(items, salaryCategoryIDs: salaryCategories, today: today), items: items, salaryCategoryIDs: salaryCategories, includeOtherIncome: includeOtherIncome)
+    }
+    public func balances(today: String, through end: String) throws -> (actual: Int, projected: Int) {
+        let items = try visibleItems(from: "0001-01-01", through: "9999-12-31")
+        let startingBalance = Int(try setting("starting_balance_cents") ?? "0") ?? 0
+        let adjustments = try adjustments()
+        return (PlanningEngine.actualBalance(items: items, startingBalanceCents: startingBalance, adjustments: adjustments, asOf: today), PlanningEngine.projectedBalance(items: items, startingBalanceCents: startingBalance, adjustments: adjustments, today: today, through: end))
     }
     public func importTransactionsCSV(_ content: String) throws -> (imported: Int, skipped: Int) {
         let rows = try CSVService.parse(content)

@@ -3,7 +3,18 @@ import Foundation
 public struct DepositPeriod: Equatable, Sendable {
     public let depositDate: String; public let endDate: String; public let depositAmountCents: Int
     public let status: Status
-    public enum Status: Sendable { case past, current, future }
+    public enum Status: Sendable, Equatable { case past, current, future }
+}
+
+public struct PayPeriodSummary: Equatable, Sendable {
+    public let period: DepositPeriod
+    public let assignedExpenseCents: Int
+    public let remainingCents: Int
+    public let carryInCents: Int
+    public let supplementalIncomeCents: Int
+    public let leftAfterPlansCents: Int
+    public var coveragePercent: Double { period.depositAmountCents == 0 ? 0 : Double(assignedExpenseCents) / Double(period.depositAmountCents) * 100 }
+    public var isOverdrawn: Bool { remainingCents < 0 }
 }
 
 public enum PlanningEngine {
@@ -19,6 +30,27 @@ public enum PlanningEngine {
 
     public static func coveringPeriod(date: String, periods: [DepositPeriod]) -> DepositPeriod? {
         periods.filter { $0.depositDate <= date }.max { $0.depositDate < $1.depositDate }
+    }
+
+    public static func summaries(periods: [DepositPeriod], items: [Item], salaryCategoryIDs: Set<Int64>, includeOtherIncome: Bool) -> [PayPeriodSummary] {
+        let depositsByID = Dictionary(uniqueKeysWithValues: items.compactMap { item in item.type == .deposit ? item.id.map { ($0, item) } : nil })
+        var carryIn = 0
+        return periods.map { period in
+            let assigned = items.filter { item in
+                guard !item.deleted, item.type != .deposit else { return false }
+                if item.assignmentOverride { return item.assignedDepositItemId.flatMap { depositsByID[$0]?.date } == period.depositDate }
+                return coveringPeriod(date: item.date, periods: periods)?.depositDate == period.depositDate
+            }.reduce(0) { $0 + $1.amountCents }
+            let supplemental = includeOtherIncome ? items.filter { item in
+                guard !item.deleted, item.type == .deposit, item.categoryId.map({ !salaryCategoryIDs.contains($0) }) ?? true else { return false }
+                return coveringPeriod(date: item.date, periods: periods)?.depositDate == period.depositDate
+            }.reduce(0) { $0 + $1.amountCents } : 0
+            let remaining = period.depositAmountCents - assigned
+            let leftAfterPlans = carryIn + remaining + supplemental
+            let summary = PayPeriodSummary(period: period, assignedExpenseCents: assigned, remainingCents: remaining, carryInCents: carryIn, supplementalIncomeCents: supplemental, leftAfterPlansCents: leftAfterPlans)
+            carryIn = leftAfterPlans
+            return summary
+        }
     }
 
     public static func actualBalance(items: [Item], startingBalanceCents: Int, adjustments: [BalanceAdjustment], asOf date: String) -> Int {

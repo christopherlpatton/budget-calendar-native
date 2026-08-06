@@ -44,6 +44,7 @@ private struct MainWindow: View {
                 switch selection {
                 case "Calendar": CalendarScreen(service: service)
                 case "Upcoming": UpcomingScreen(service: service)
+                case "Insights": InsightsScreen(service: service)
                 case "Settings": SettingsScreen(database: database, service: service)
                 default: ContentUnavailableView(selection, systemImage: icon, description: Text("This native screen is connected to the shared SQLite database."))
                 }
@@ -76,6 +77,24 @@ private struct UpcomingScreen: View {
         VStack(alignment: .leading) { Text("Upcoming").font(.largeTitle.bold()); List(items) { ItemRow(item: $0) } }.padding().task { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let today = f.string(from: Date()); items = (try? service.items(from: today, through: "2099-12-31")) ?? [] }
     }
 }
+
+private struct InsightsScreen: View {
+    let service: BudgetService
+    @State private var summaries: [PayPeriodSummary] = []
+    @State private var actual = 0
+    @State private var projected = 0
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Insights").font(.largeTitle.bold())
+            HStack(spacing: 14) { InsightCard(title: "Actual balance", amount: actual, tint: .green); InsightCard(title: "Projected balance", amount: projected, tint: projected < 0 ? .red : .purple) }
+            if summaries.isEmpty { ContentUnavailableView("No salary pay periods", systemImage: "calendar.badge.exclamationmark", description: Text("Mark an income source as Salary and add a deposit to see paycheck planning.")) }
+            else { List(summaries, id: \.period.depositDate) { summary in HStack { VStack(alignment: .leading) { Text(summary.period.status == .current ? "This paycheck" : "Paycheck of \(summary.period.depositDate)").fontWeight(summary.period.status == .current ? .bold : .regular); Text("\(summary.period.depositDate) – \(summary.period.endDate == "2099-12-31" ? "ongoing" : NativeDate.dayBefore(summary.period.endDate))").font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text(NativeCurrency.string(summary.leftAfterPlansCents)).foregroundStyle(summary.leftAfterPlansCents < 0 ? .red : .primary).fontWeight(.semibold); Text("This paycheck: \(NativeCurrency.string(summary.remainingCents)) · \(NativeCurrency.string(summary.assignedExpenseCents)) assigned").font(.caption).foregroundStyle(.secondary) } } } }
+        }.padding().task { load() }
+    }
+    private func load() { let today = NativeDate.string(Date()); do { summaries = try service.payPeriodSummaries(today: today); let active = summaries.first(where: { $0.period.status == .current }) ?? summaries.last; let end = active?.period.endDate == "2099-12-31" ? today : active.map { NativeDate.dayBefore($0.period.endDate) } ?? today; let balances = try service.balances(today: today, through: end); actual = balances.actual; projected = balances.projected } catch { summaries = [] } }
+}
+
+private struct InsightCard: View { let title: String; let amount: Int; let tint: Color; var body: some View { VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); Text(NativeCurrency.string(amount)).font(.title2.bold()).foregroundStyle(tint) }.frame(maxWidth: .infinity, alignment: .leading).padding().background(.quaternary, in: RoundedRectangle(cornerRadius: 12)) } }
 
 private struct ItemRow: View {
     let item: Item
@@ -135,8 +154,9 @@ private struct TransactionEditor: View {
     }
 }
 
-private enum NativeDate { static func string(_ date: Date) -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date) }; static func date(_ value: String) -> Date? { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.date(from: value) } }
+private enum NativeDate { static func string(_ date: Date) -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date) }; static func date(_ value: String) -> Date? { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.date(from: value) }; static func dayBefore(_ value: String) -> String { guard let date = date(value) else { return value }; return string(Calendar.current.date(byAdding: .day, value: -1, to: date)!) } }
 private enum NativeMoney { static func cents(_ value: String) -> Int? { let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.numberStyle = .decimal; guard let amount = formatter.number(from: value)?.decimalValue else { return nil }; return NSDecimalNumber(decimal: amount * 100).rounding(accordingToBehavior: NSDecimalNumberHandler(roundingMode: .plain, scale: 0, raiseOnExactness: false, raiseOnOverflow: true, raiseOnUnderflow: true, raiseOnDivideByZero: true)).intValue } }
+private enum NativeCurrency { static func string(_ cents: Int) -> String { let formatter = NumberFormatter(); formatter.numberStyle = .currency; return formatter.string(from: NSNumber(value: Double(cents) / 100)) ?? "$0.00" } }
 
 private struct SettingsScreen: View {
     let database: DatabaseCoordinator
