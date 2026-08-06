@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import BudgetCalendarCore
 
 @main
@@ -42,7 +44,7 @@ private struct MainWindow: View {
                 switch selection {
                 case "Calendar": CalendarScreen(service: service)
                 case "Upcoming": UpcomingScreen(service: service)
-                case "Settings": SettingsScreen(database: database)
+                case "Settings": SettingsScreen(database: database, service: service)
                 default: ContentUnavailableView(selection, systemImage: icon, description: Text("This native screen is connected to the shared SQLite database."))
                 }
             }.frame(minWidth: 720, minHeight: 480)
@@ -138,7 +140,28 @@ private enum NativeMoney { static func cents(_ value: String) -> Int? { let form
 
 private struct SettingsScreen: View {
     let database: DatabaseCoordinator
-    var body: some View { Form { Section("Data") { LabeledContent("Database", value: BudgetCalendarPaths.database.path).textSelection(.enabled); LabeledContent("Schema", value: "v\(DatabaseCoordinator.supportedSchemaVersion)"); LabeledContent("Journal", value: "SQLite WAL") }; Section("Compatibility") { Text("The native app reads and writes the same database as Budget Calendar 0.1.7. Close the other app before making changes.").foregroundStyle(.secondary) } }.formStyle(.grouped).padding() }
+    let service: BudgetService
+    @State private var message: String?
+    @State private var showingResetConfirmation = false
+    var body: some View {
+        Form {
+            Section("Data") { LabeledContent("Database", value: BudgetCalendarPaths.database.path).textSelection(.enabled); LabeledContent("Schema", value: "v\(DatabaseCoordinator.supportedSchemaVersion)"); LabeledContent("Journal", value: "SQLite WAL"); Button("Copy backup now") { backup() } }
+            Section("Export") { Button("Export transactions CSV") { exportCSV() }; Button("Import transactions CSV") { importCSV() }; Text("Imports add valid rows without replacing existing items. Recurring export rows become individual calendar entries.").font(.caption).foregroundStyle(.secondary) }
+            Section("Compatibility") { Text("The native app reads and writes the same database as Budget Calendar 0.1.7. Close the other app before making changes.").foregroundStyle(.secondary) }
+            Section("Delete all data") { Text("This permanently removes calendar items, rules, categories, settings, adjustments, and audit history, then restores the defaults.").foregroundStyle(.red); Button("Delete all data", role: .destructive) { showingResetConfirmation = true } }
+            if let message { Section { Text(message).font(.caption) } }
+        }.formStyle(.grouped).padding()
+            .alert("Delete all Budget Calendar data?", isPresented: $showingResetConfirmation) { Button("Delete all data", role: .destructive) { reset() }; Button("Cancel", role: .cancel) {} } message: { Text("This cannot be undone. Create a backup first if you may need this data later.") }
+    }
+    private func exportCSV() { do { guard let url = NativeFilePanels.save(name: "budget-transactions.csv", type: .commaSeparatedText) else { return }; let categories = Dictionary(uniqueKeysWithValues: try service.categories().compactMap { category in category.id.map { id in (id, category) } }); let content = CSVService.export(items: try service.visibleItems(from: "0001-01-01", through: "9999-12-31"), categories: categories); try Data(("\u{FEFF}" + content).write(to: url, atomically: true, encoding: .utf8); message = "Exported CSV to \(url.lastPathComponent)." } catch { message = error.localizedDescription } }
+    private func importCSV() { do { guard let url = NativeFilePanels.open(type: .commaSeparatedText) else { return }; let result = try service.importTransactionsCSV(String(decoding: Data(contentsOf: url), as: UTF8.self)); message = "Imported \(result.imported) transaction\(result.imported == 1 ? "" : "s"); skipped \(result.skipped)." } catch { message = error.localizedDescription } }
+    private func backup() { do { guard let url = NativeFilePanels.save(name: "budget-backup.sqlite", type: UTType(filenameExtension: "sqlite") ?? .data) else { return }; try BackupService.copy(database: database.database, to: url, source: database.path); message = "Created backup at \(url.lastPathComponent)." } catch { message = error.localizedDescription } }
+    private func reset() { do { try service.resetAllData(); message = "All data was deleted and defaults were restored." } catch { message = error.localizedDescription } }
+}
+
+private enum NativeFilePanels {
+    static func save(name: String, type: UTType) -> URL? { let panel = NSSavePanel(); panel.nameFieldStringValue = name; panel.allowedContentTypes = [type]; return panel.runModal() == .OK ? panel.url : nil }
+    static func open(type: UTType) -> URL? { let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false; panel.allowedContentTypes = [type]; return panel.runModal() == .OK ? panel.url : nil }
 }
 
 private struct StartupErrorView: View {

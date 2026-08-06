@@ -38,6 +38,29 @@ public final class BudgetService {
     public func setPaid(id: Int64, paid: Bool, paidDate: String? = nil) throws {
         try database.write { db in try db.execute(sql: "UPDATE items SET status=?, paid_date=?, updated_at=? WHERE id=?", arguments: [paid ? ItemStatus.paid.rawValue : ItemStatus.planned.rawValue, paid ? (paidDate ?? today()) : nil, now(), id]) }
     }
+    public func importTransactionsCSV(_ content: String) throws -> (imported: Int, skipped: Int) {
+        let rows = try CSVService.parse(content)
+        return try database.write { db in
+            let categories = try Category.fetchAll(db)
+            let categoryByName = Dictionary(uniqueKeysWithValues: categories.compactMap { category in category.id.map { (category.name.lowercased(), $0) } })
+            var imported = 0, skipped = 0
+            for row in rows {
+                guard let type = ItemType(rawValue: row["type"]?.lowercased() ?? ""), let name = row["name"]?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty, let cents = cents(row["amount"] ?? ""), cents > 0, validDate(row["date"] ?? "") else { skipped += 1; continue }
+                let status = ItemStatus(rawValue: row["status"]?.lowercased() ?? "") ?? .planned
+                let item = Item(name: name, amountCents: cents, type: type, date: row["date"]!, categoryId: row["category"].flatMap { categoryByName[$0.lowercased()] }, note: row["note"]?.emptyAsNil, priority: Int(row["priority"] ?? "") ?? 0, status: status, paidDate: row["paid date"]?.emptyAsNil)
+                try item.insert(db); imported += 1
+            }
+            return (imported, skipped)
+        }
+    }
+    public func resetAllData() throws {
+        try database.write { db in
+            try db.execute(sql: "DELETE FROM audit_log; DELETE FROM items; DELETE FROM recurring_rules; DELETE FROM balance_adjustments; DELETE FROM categories; DELETE FROM settings; DELETE FROM sqlite_sequence WHERE name IN ('items','recurring_rules','balance_adjustments','audit_log','categories')")
+            let seed: [(String, String, String, Int, String?)] = [("Housing", "#e05d7a", "both", 1, nil), ("Utilities", "#f2a6c0", "both", 2, nil), ("Food & Groceries", "#a48bf0", "both", 3, nil), ("Transportation", "#7c6bd6", "both", 4, nil), ("Entertainment", "#f6c6d8", "both", 5, nil), ("Shopping", "#d4b0f0", "both", 6, nil), ("Health", "#f0eafa", "both", 7, nil), ("Other", "#8b83a3", "both", 8, nil), ("Salary", "#2f9e7f", "deposit", 9, "salary"), ("Other Income", "#3aa97c", "deposit", 10, "other")]
+            for row in seed { try db.execute(sql: "INSERT INTO categories(name,color,kind,is_builtin,sort_order,income_type) VALUES(?,?,?,1,?,?)", arguments: [row.0, row.1, row.2, row.3, row.4]) }
+            try db.execute(sql: "INSERT INTO settings(key,value) VALUES('include_other_income_in_pay_periods','true')")
+        }
+    }
 
     @discardableResult public func materialize(ruleId: Int64, from start: String, through end: String) throws -> Int {
         try database.write { db in
@@ -101,5 +124,9 @@ public final class BudgetService {
     }
     private func now() -> String { ISO8601DateFormatter().string(from: Date()) }
     private func today() -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: Date()) }
+    private func cents(_ value: String) -> Int? { let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.numberStyle = .decimal; guard let decimal = formatter.number(from: value)?.decimalValue else { return nil }; return NSDecimalNumber(decimal: decimal * 100).rounding(accordingToBehavior: NSDecimalNumberHandler(roundingMode: .plain, scale: 0, raiseOnExactness: false, raiseOnOverflow: false, raiseOnUnderflow: false, raiseOnDivideByZero: false)).intValue }
+    private func validDate(_ value: String) -> Bool { let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"; return formatter.date(from: value).map { formatter.string(from: $0) == value } ?? false }
     private func dayBefore(_ value: String) -> String { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let date = f.date(from: value)!; return f.string(from: Calendar.current.date(byAdding: .day, value: -1, to: date)!) }
 }
+
+private extension String { var emptyAsNil: String? { isEmpty ? nil : self } }

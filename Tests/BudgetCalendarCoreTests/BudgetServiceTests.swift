@@ -30,4 +30,16 @@ final class BudgetServiceTests: XCTestCase {
         XCTAssertEqual(updated?.status, .paid)
         XCTAssertEqual(updated?.paidDate, "2026-08-07")
     }
+
+    func testCSVImportIsAdditiveAndResetRestoresDefaults() throws {
+        let service = try service()
+        let result = try service.importTransactionsCSV("Type,Name,Amount,Date,Category,Note,Priority,Status,Paid Date\nPurchase,Coffee,4.50,2026-08-06,Food & Groceries,,0,paid,2026-08-06\nBad,Nope,nope,invalid,,,,,\n")
+        XCTAssertEqual(result.imported, 1)
+        XCTAssertEqual(result.skipped, 1)
+        XCTAssertEqual(try service.visibleItems(from: "2026-08-01", through: "2026-08-31").count, 1)
+        try service.resetAllData()
+        XCTAssertEqual(try service.visibleItems(from: "2026-08-01", through: "2026-08-31").count, 0)
+        XCTAssertEqual(try service.categories().count, 10)
+        XCTAssertEqual(try service.setting("include_other_income_in_pay_periods"), "true")
+    }
 }
