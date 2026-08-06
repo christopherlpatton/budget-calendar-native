@@ -5,7 +5,7 @@ public enum ItemType: String, Codable, Sendable { case deposit, bill, purchase }
 public enum ItemStatus: String, Codable, Sendable { case planned, paid }
 public enum RecurrenceKind: String, Codable, Sendable { case monthlyDate = "monthly_date", weekly, biweekly, monthlyNth = "monthly_nth" }
 
-public struct Item: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+public struct Item: Codable, FetchableRecord, MutablePersistableRecord, Identifiable, Sendable {
     public var id: Int64?
     public var name: String
     public var amountCents: Int
@@ -54,27 +54,27 @@ public struct Item: Codable, FetchableRecord, PersistableRecord, Identifiable, S
     }
 }
 
-public struct Category: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+public struct Category: Codable, FetchableRecord, MutablePersistableRecord, Identifiable, Sendable {
     public var id: Int64?; public var name: String; public var color: String; public var kind: String
     public var isBuiltin: Bool; public var sortOrder: Int; public var incomeType: String?
     public static let databaseTableName = "categories"
     public enum CodingKeys: String, CodingKey { case id, name, color, kind, isBuiltin = "is_builtin", sortOrder = "sort_order", incomeType = "income_type" }
 }
 
-public struct RecurringRule: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+public struct RecurringRule: Codable, FetchableRecord, MutablePersistableRecord, Identifiable, Sendable {
     public var id: Int64?; public var kind: RecurrenceKind; public var anchorDate: String
     public var weekday: Int?; public var dayOfMonth: Int?; public var nth: Int?; public var endDate: String?
     public static let databaseTableName = "recurring_rules"
     public enum CodingKeys: String, CodingKey { case id, kind, anchorDate = "anchor_date", weekday, dayOfMonth = "day_of_month", nth, endDate = "end_date" }
 }
 
-public struct BalanceAdjustment: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+public struct BalanceAdjustment: Codable, FetchableRecord, MutablePersistableRecord, Identifiable, Sendable {
     public var id: Int64?; public var amountCents: Int; public var date: String; public var note: String?; public var createdAt: String
     public static let databaseTableName = "balance_adjustments"
     public enum CodingKeys: String, CodingKey { case id, amountCents = "amount_cents", date, note, createdAt = "created_at" }
 }
 
-public struct Setting: Codable, FetchableRecord, PersistableRecord, Sendable {
+public struct Setting: Codable, FetchableRecord, MutablePersistableRecord, Sendable {
     public var key: String; public var value: String
     public static let databaseTableName = "settings"
 }
