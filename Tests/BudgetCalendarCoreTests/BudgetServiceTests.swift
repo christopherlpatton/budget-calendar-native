@@ -20,4 +20,14 @@ final class BudgetServiceTests: XCTestCase {
         XCTAssertEqual(try service.materialize(ruleId: rule.id!, from: "2026-01-01", through: "2026-04-30"), 0)
         XCTAssertEqual(try service.items(from: "2026-01-01", through: "2026-04-30").filter { $0.date == "2026-02-15" }.count, 1)
     }
+
+    func testSaveAndMarkPaidRoundTripsThroughSharedItemSchema() throws {
+        let service = try service()
+        let saved = try service.saveItem(Item(name: "Groceries", amountCents: 4599, type: .purchase, date: "2026-08-06"))
+        XCTAssertNotNil(saved.id)
+        try service.setPaid(id: saved.id!, paid: true, paidDate: "2026-08-07")
+        let updated = try service.item(id: saved.id!)
+        XCTAssertEqual(updated?.status, .paid)
+        XCTAssertEqual(updated?.paidDate, "2026-08-07")
+    }
 }

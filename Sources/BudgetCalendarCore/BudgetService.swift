@@ -18,11 +18,26 @@ public final class BudgetService {
     public func items(from start: String, through end: String) throws -> [Item] {
         try database.read { db in try Item.fetchAll(db, sql: "SELECT * FROM items WHERE date BETWEEN ? AND ? ORDER BY date, id", arguments: [start, end]) }
     }
+    public func visibleItems(from start: String, through end: String) throws -> [Item] {
+        try database.read { db in try Item.fetchAll(db, sql: "SELECT * FROM items WHERE deleted=0 AND date BETWEEN ? AND ? ORDER BY date, id", arguments: [start, end]) }
+    }
     public func item(id: Int64) throws -> Item? { try database.read { db in try Item.fetchOne(db, key: id) } }
     public func categories() throws -> [Category] { try database.read { db in try Category.fetchAll(db, sql: "SELECT * FROM categories ORDER BY sort_order, id") } }
     public func rules() throws -> [RecurringRule] { try database.read { db in try RecurringRule.fetchAll(db, sql: "SELECT * FROM recurring_rules ORDER BY anchor_date, id") } }
     public func setting(_ key: String) throws -> String? { try database.read { db in try String.fetchOne(db, sql: "SELECT value FROM settings WHERE key=?", arguments: [key]) } }
     public func setSetting(_ key: String, value: String) throws { try database.write { db in try db.execute(sql: "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", arguments: [key, value]) } }
+    @discardableResult public func saveItem(_ item: Item) throws -> Item {
+        var item = item
+        item.updatedAt = now()
+        try database.write { db in
+            if item.id == nil { item.createdAt = item.updatedAt; try item.insert(db) }
+            else { try item.update(db) }
+        }
+        return item
+    }
+    public func setPaid(id: Int64, paid: Bool, paidDate: String? = nil) throws {
+        try database.write { db in try db.execute(sql: "UPDATE items SET status=?, paid_date=?, updated_at=? WHERE id=?", arguments: [paid ? ItemStatus.paid.rawValue : ItemStatus.planned.rawValue, paid ? (paidDate ?? today()) : nil, now(), id]) }
+    }
 
     @discardableResult public func materialize(ruleId: Int64, from start: String, through end: String) throws -> Int {
         try database.write { db in
@@ -85,5 +100,6 @@ public final class BudgetService {
         var updated = current; updated.name = changes.name ?? current.name; updated.amountCents = changes.amountCents ?? current.amountCents; updated.type = changes.type ?? current.type; updated.date = changes.date ?? current.date; updated.categoryId = changes.categoryId ?? current.categoryId; updated.note = changes.note ?? current.note; updated.priority = changes.priority ?? current.priority; updated.isOverride = override; updated.updatedAt = now(); try updated.update(db)
     }
     private func now() -> String { ISO8601DateFormatter().string(from: Date()) }
+    private func today() -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: Date()) }
     private func dayBefore(_ value: String) -> String { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let date = f.date(from: value)!; return f.string(from: Calendar.current.date(byAdding: .day, value: -1, to: date)!) }
 }
