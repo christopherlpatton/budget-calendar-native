@@ -1,0 +1,8 @@
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+.DS_Store
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
