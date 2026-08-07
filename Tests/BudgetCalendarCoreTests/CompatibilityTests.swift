@@ -3,6 +3,10 @@ import GRDB
 @testable import BudgetCalendarCore
 
 final class CompatibilityTests: XCTestCase {
+    private func fixture(_ name: String) throws -> String {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: "sql"))
+        return try String(contentsOf: url)
+    }
     func testFreshDatabaseUsesSharedSchemaAndVersion() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -57,5 +61,34 @@ final class CompatibilityTests: XCTestCase {
         try Data("orphaned WAL".utf8).write(to: URL(fileURLWithPath: active.path + "-wal"))
         XCTAssertNil(try BackupService.restore(backup: backup, to: active))
         XCTAssertEqual(try DatabaseQueue(path: active.path).read { try String.fetchOne($0, sql: "SELECT value FROM marker") }, "restored")
+    }
+
+    func testElectronVersionSixFixturePreservesRowsThroughNativeWrite() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("budget.sqlite")
+        let electronDatabase = try DatabaseQueue(path: path.path)
+        try electronDatabase.write { try $0.execute(sql: fixture("electron-v6-compat")) }
+        let coordinator = try DatabaseCoordinator(path: path)
+        let service = BudgetService(database: coordinator.database)
+        let moved = try XCTUnwrap(service.item(id: 802))
+        XCTAssertEqual(moved.date, "2026-08-16")
+        XCTAssertEqual(moved.movedFromDate, "2026-08-05")
+        XCTAssertEqual(moved.assignedDepositItemId, 801)
+        XCTAssertEqual(moved.movedFromDepositItemId, 800)
+        XCTAssertEqual(try service.materialize(ruleId: 700, from: "2026-08-01", through: "2026-09-30"), 0)
+        XCTAssertEqual(try service.visibleItems(from: "2026-08-01", through: "2026-09-30").map(\.id), [800, 804, 801, 802])
+        XCTAssertEqual(try service.adjustments().first?.note, "Electron adjustment")
+        _ = try service.saveItem(Item(name: "Native write", amountCents: 999, type: .purchase, date: "2026-08-20"))
+        let preserved = try coordinator.database.read { db in
+            try Row.fetchOne(db, sql: "SELECT name, amount_cents, moved_from_date, assignment_note FROM items WHERE id=802")
+        }
+        XCTAssertEqual(preserved?["name"] as String?, "Moved rent")
+        XCTAssertEqual(preserved?["amount_cents"] as Int?, 120000)
+        XCTAssertEqual(preserved?["moved_from_date"] as String?, "2026-08-05")
+        XCTAssertEqual(preserved?["assignment_note"] as String?, "Pay later")
+        XCTAssertEqual(try coordinator.database.read { try String.fetchOne($0, sql: "SELECT moved_from_date FROM items WHERE id=803") }, "2026-09-05")
+        XCTAssertEqual(try coordinator.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM categories WHERE income_type='salary'") }, 1)
+        XCTAssertEqual(try coordinator.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 6)
     }
 }
