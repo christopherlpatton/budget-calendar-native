@@ -73,6 +73,35 @@ final class BudgetServiceTests: XCTestCase {
         XCTAssertThrowsError(try service.createAdjustment(amountCents: 100, date: "2026-08-03", note: " "))
     }
 
+    func testManualPaycheckAssignmentAndUnassignmentPreserveAuditHistory() throws {
+        let service = try service()
+        let salary = try XCTUnwrap(try service.categories().first { $0.incomeType == "salary" })
+        let otherIncome = try XCTUnwrap(try service.categories().first { $0.incomeType == "other" })
+        let firstPay = try service.saveItem(Item(name: "Pay one", amountCents: 100_000, type: .deposit, date: "2026-08-01", categoryId: salary.id))
+        let secondPay = try service.saveItem(Item(name: "Pay two", amountCents: 100_000, type: .deposit, date: "2026-08-15", categoryId: salary.id))
+        let thirdPay = try service.saveItem(Item(name: "Pay three", amountCents: 100_000, type: .deposit, date: "2026-08-29", categoryId: salary.id))
+        let otherPay = try service.saveItem(Item(name: "Gift", amountCents: 10_000, type: .deposit, date: "2026-08-10", categoryId: otherIncome.id))
+        let expense = try service.saveItem(Item(name: "Rent", amountCents: 50_000, type: .bill, date: "2026-08-05"))
+        try service.assignToPaycheck(itemID: expense.id!, depositItemID: secondPay.id!, note: "Pay later", targetDate: "2026-08-16")
+        let moved = try XCTUnwrap(service.item(id: expense.id!))
+        XCTAssertTrue(moved.assignmentOverride)
+        XCTAssertEqual(moved.assignedDepositItemId, secondPay.id)
+        XCTAssertEqual(moved.movedFromDepositItemId, firstPay.id)
+        XCTAssertEqual(moved.assignmentNote, "Pay later")
+        XCTAssertEqual(moved.date, "2026-08-16")
+        try service.assignToPaycheck(itemID: expense.id!, depositItemID: thirdPay.id!, note: "Pay even later", targetDate: "2026-08-29")
+        try service.unassignFromPaycheck(itemID: expense.id!, note: "Hold this")
+        let unassigned = try XCTUnwrap(service.item(id: expense.id!))
+        XCTAssertTrue(unassigned.assignmentOverride)
+        XCTAssertNil(unassigned.assignedDepositItemId)
+        XCTAssertEqual(unassigned.assignmentNote, "Hold this")
+        XCTAssertEqual(unassigned.movedFromDepositItemId, firstPay.id)
+        XCTAssertEqual(unassigned.movedFromDate, "2026-08-05")
+        XCTAssertThrowsError(try service.assignToPaycheck(itemID: expense.id!, depositItemID: otherPay.id!, note: "Wrong source", targetDate: "2026-08-10"))
+        let actions = try service.database.read { db in try String.fetchAll(db, sql: "SELECT action FROM audit_log ORDER BY id") }
+        XCTAssertEqual(actions, ["move", "move", "unassign"])
+    }
+
     func testPayPeriodSummaryUsesOnlySalaryDepositsAndAssignmentRules() throws {
         let service = try service()
         let salary = try service.categories().first { $0.incomeType == "salary" }!

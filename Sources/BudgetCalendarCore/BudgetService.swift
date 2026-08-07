@@ -42,6 +42,36 @@ public final class BudgetService {
         }
     }
     public func item(id: Int64) throws -> Item? { try database.read { db in try Item.fetchOne(db, key: id) } }
+    public func salaryDepositItems() throws -> [Item] {
+        try database.read { db in
+            let salaryIDs = Set(try Category.fetchAll(db).compactMap { category in (category.incomeType == "salary" || category.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "salary") ? category.id : nil })
+            return try Item.fetchAll(db, sql: "SELECT * FROM items WHERE deleted=0 AND type='deposit' ORDER BY date,id").filter { $0.categoryId.map(salaryIDs.contains) == true }
+        }
+    }
+    public func assignToPaycheck(itemID: Int64, depositItemID: Int64, note: String, sourceDepositItemID: Int64? = nil, targetDate: String? = nil) throws {
+        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !note.isEmpty else { throw BudgetServiceError("Moving an item requires a note.") }
+        try database.write { db in
+            guard let item = try Item.fetchOne(db, key: itemID), item.type != .deposit else { throw BudgetServiceError("Only bills and purchases can be assigned to a paycheck.") }
+            guard let target = try Item.fetchOne(db, key: depositItemID), !target.deleted, target.type == .deposit, try isSalaryDeposit(target, db: db) else { throw BudgetServiceError("Choose a valid Salary deposit.") }
+            let sourceID = sourceDepositItemID ?? item.movedFromDepositItemId ?? item.assignedDepositItemId ?? autoAssignedDepositID(for: item, db: db)
+            let updatedDate = targetDate ?? target.date
+            guard validDate(updatedDate), updatedDate >= target.date else { throw BudgetServiceError("Choose a date on or after the target paycheck.") }
+            if let nextDate = try nextSalaryDepositDate(after: target.date, db: db), updatedDate >= nextDate { throw BudgetServiceError("Choose a date before the next salary paycheck.") }
+            try db.execute(sql: "UPDATE items SET assignment_override=1, assigned_deposit_item_id=?, assignment_note=?, moved_from_deposit_item_id=?, moved_from_date=?, date=?, updated_at=? WHERE id=?", arguments: [depositItemID, note, sourceID, item.movedFromDate ?? item.date, updatedDate, now(), itemID])
+            try db.execute(sql: "INSERT INTO audit_log(item_id,action,detail,created_at) VALUES(?,?,?,?)", arguments: [itemID, "move", "Moved from \(item.movedFromDate ?? item.date) to \(updatedDate) in deposit period \(target.date). Note: \(note)", now()])
+        }
+    }
+    public func unassignFromPaycheck(itemID: Int64, note: String, sourceDepositItemID: Int64? = nil) throws {
+        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !note.isEmpty else { throw BudgetServiceError("Unassigning an item requires a note.") }
+        try database.write { db in
+            guard let item = try Item.fetchOne(db, key: itemID), item.type != .deposit else { throw BudgetServiceError("Only bills and purchases can be unassigned from a paycheck.") }
+            let sourceID = sourceDepositItemID ?? item.movedFromDepositItemId ?? item.assignedDepositItemId ?? autoAssignedDepositID(for: item, db: db)
+            try db.execute(sql: "UPDATE items SET assignment_override=1, assigned_deposit_item_id=NULL, assignment_note=?, moved_from_deposit_item_id=?, moved_from_date=?, updated_at=? WHERE id=?", arguments: [note, sourceID, item.movedFromDate ?? item.date, now(), itemID])
+            try db.execute(sql: "INSERT INTO audit_log(item_id,action,detail,created_at) VALUES(?,?,?,?)", arguments: [itemID, "unassign", "Unassigned from deposit. Note: \(note)", now()])
+        }
+    }
     public func categories() throws -> [Category] { try database.read { db in try Category.fetchAll(db, sql: "SELECT * FROM categories ORDER BY sort_order, id") } }
     @discardableResult public func saveCategory(_ category: Category) throws -> Category {
         var category = category
@@ -214,6 +244,19 @@ public final class BudgetService {
         if override, current.ruleId != nil, updated.date != current.date { updated.movedFromDate = current.movedFromDate ?? current.date }
         updated.updatedAt = now(); try updated.update(db)
     }
+    private func autoAssignedDepositID(for item: Item, db: Database) throws -> Int64? {
+        let salaryIDs = try salaryCategoryIDs(db: db)
+        return try Item.fetchAll(db, sql: "SELECT * FROM items WHERE deleted=0 AND type='deposit' AND date<=? ORDER BY date DESC,id DESC", arguments: [item.date]).first { $0.categoryId.map(salaryIDs.contains) == true }?.id
+    }
+    private func isSalaryDeposit(_ item: Item, db: Database) throws -> Bool {
+        guard item.type == .deposit, let categoryID = item.categoryId else { return false }
+        return try salaryCategoryIDs(db: db).contains(categoryID)
+    }
+    private func nextSalaryDepositDate(after date: String, db: Database) throws -> String? {
+        let salaryIDs = try salaryCategoryIDs(db: db)
+        return try Item.fetchAll(db, sql: "SELECT * FROM items WHERE deleted=0 AND type='deposit' AND date>? ORDER BY date,id", arguments: [date]).first { $0.categoryId.map(salaryIDs.contains) == true }?.date
+    }
+    private func salaryCategoryIDs(db: Database) throws -> Set<Int64> { Set(try Category.fetchAll(db).compactMap { category in (category.incomeType == "salary" || category.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "salary") ? category.id : nil }) }
     private func now() -> String { ISO8601DateFormatter().string(from: Date()) }
     private func today() -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: Date()) }
     private func cents(_ value: String) -> Int? { let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.numberStyle = .decimal; guard let decimal = formatter.number(from: value)?.decimalValue else { return nil }; return NSDecimalNumber(decimal: decimal * 100).rounding(accordingToBehavior: NSDecimalNumberHandler(roundingMode: .plain, scale: 0, raiseOnExactness: false, raiseOnOverflow: false, raiseOnUnderflow: false, raiseOnDivideByZero: false)).intValue }

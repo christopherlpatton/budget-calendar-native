@@ -121,6 +121,7 @@ private struct TransactionEditor: View {
     @State private var schedule: ScheduleChoice
     @State private var scope: ScopeChoice = .onlyThis
     @State private var showingDeleteConfirmation = false
+    @State private var showingAssignmentEditor = false
     @State private var error: String?
 
     init(service: BudgetService, categories: [Category], existing: Item?, onSave: @escaping () -> Void) {
@@ -155,10 +156,12 @@ private struct TransactionEditor: View {
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
             HStack {
                 if existing != nil { Button("Delete", role: .destructive) { showingDeleteConfirmation = true } }
+                if let existing, existing.type != .deposit { Button("Assign paycheck") { showingAssignmentEditor = true } }
                 Spacer(); Button("Cancel") { dismiss() }; Button("Save") { save() }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || NativeMoney.cents(amount) == nil)
             }
         }.padding(24).frame(width: 460)
             .alert(deleteTitle, isPresented: $showingDeleteConfirmation) { Button("Delete", role: .destructive) { delete() }; Button("Cancel", role: .cancel) {} } message: { Text(deleteMessage) }
+            .sheet(isPresented: $showingAssignmentEditor) { if let existing { PaycheckAssignmentEditor(service: service, item: existing) { onSave() } } }
     }
 
     private var isRecurring: Bool { existing?.ruleId != nil }
@@ -194,6 +197,21 @@ private struct TransactionEditor: View {
         do { _ = try service.deleteOccurrence(id: id, scope: isRecurring ? occurrenceScope : .all); onSave(); dismiss() }
         catch { error = error.localizedDescription }
     }
+}
+
+private struct PaycheckAssignmentEditor: View {
+    let service: BudgetService; let item: Item; let onSave: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var deposits: [Item] = []; @State private var selectedDepositID: Int64?; @State private var targetDate = Date(); @State private var preserveExistingDateOnInitialSelection = true; @State private var unassign = false; @State private var note = ""; @State private var error: String?
+    var body: some View { VStack(alignment: .leading, spacing: 16) { Text("Assign paycheck").font(.title2.bold()); Text(item.name).foregroundStyle(.secondary); Form { Toggle("Leave unassigned", isOn: $unassign); if !unassign { Picker("Paycheck", selection: $selectedDepositID) { Text("Choose a salary deposit").tag(Int64?.none); ForEach(deposits) { deposit in Text("\(deposit.date) · \(NativeCurrency.string(deposit.amountCents))").tag(deposit.id) } }.onChange(of: selectedDepositID) { _ in if preserveExistingDateOnInitialSelection { preserveExistingDateOnInitialSelection = false; setInitialTargetDate() } else { resetTargetDate() } }; DatePicker("New date in this pay period", selection: $targetDate, in: permittedDates, displayedComponents: .date); Text(payPeriodHint).font(.caption).foregroundStyle(.secondary) }; TextField("Reason", text: $note, axis: .vertical) }; if let error { Text(error).font(.caption).foregroundStyle(.red) }; HStack { Spacer(); Button("Cancel") { dismiss() }; Button(unassign ? "Unassign" : "Move") { save() }.buttonStyle(.borderedProminent).disabled(note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (!unassign && selectedDepositID == nil)) } }.padding(24).frame(width: 430).task { load() } }
+    private var selectedDeposit: Item? { deposits.first { $0.id == selectedDepositID } }
+    private var nextDeposit: Item? { guard let selectedDeposit else { return nil }; return deposits.first { $0.date > selectedDeposit.date } }
+    private var permittedDates: ClosedRange<Date> { let start = selectedDeposit.flatMap { NativeDate.date($0.date) } ?? Date.distantPast; let end = nextDeposit.flatMap { NativeDate.date(NativeDate.dayBefore($0.date)) } ?? Date.distantFuture; return start...end }
+    private var payPeriodHint: String { guard let selectedDeposit else { return "Choose a salary deposit to set a valid date range." }; return nextDeposit.map { "Date must be from \(selectedDeposit.date) through \(NativeDate.dayBefore($0.date))." } ?? "Date must be on or after \(selectedDeposit.date)." }
+    private func load() { do { deposits = try service.salaryDepositItems(); selectedDepositID = item.assignedDepositItemId; if selectedDepositID == nil { selectedDepositID = deposits.last(where: { $0.date <= item.date })?.id }; setInitialTargetDate() } catch { self.error = error.localizedDescription } }
+    private func setInitialTargetDate() { if let existingDate = NativeDate.date(item.date), permittedDates.contains(existingDate) { targetDate = existingDate } else { resetTargetDate() } }
+    private func resetTargetDate() { if let selectedDeposit, let date = NativeDate.date(selectedDeposit.date) { targetDate = date } }
+    private func save() { do { if unassign { try service.unassignFromPaycheck(itemID: item.id!, note: note) } else if let selectedDepositID { try service.assignToPaycheck(itemID: item.id!, depositItemID: selectedDepositID, note: note, targetDate: NativeDate.string(targetDate)) }; onSave(); dismiss() } catch { self.error = error.localizedDescription } }
 }
 
 private enum NativeDate { static func string(_ date: Date) -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date) }; static func date(_ value: String) -> Date? { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.date(from: value) }; static func dayBefore(_ value: String) -> String { guard let date = date(value) else { return value }; return string(Calendar.current.date(byAdding: .day, value: -1, to: date)!) }; static func addingYears(_ years: Int, to date: Date) -> String { string(Calendar.current.date(byAdding: .year, value: years, to: date)!) } }
