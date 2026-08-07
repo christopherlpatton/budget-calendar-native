@@ -141,6 +141,29 @@ public final class BudgetService {
         let includeOtherIncome = (try setting("include_other_income_in_pay_periods")) != "false"
         return PlanningEngine.summaries(periods: PlanningEngine.deriveSalaryPeriods(items, salaryCategoryIDs: salaryCategories, today: today), items: items, salaryCategoryIDs: salaryCategories, includeOtherIncome: includeOtherIncome)
     }
+    public func payPeriodDetail(depositDate: String, today: String) throws -> PayPeriodDetail? {
+        let allItems = try visibleItems(from: "0001-01-01", through: "9999-12-31")
+        let salaryCategories = Set(try categories().compactMap { category in
+            (category.incomeType == "salary" || category.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "salary") ? category.id : nil
+        })
+        let periods = PlanningEngine.deriveSalaryPeriods(allItems, salaryCategoryIDs: salaryCategories, today: today)
+        guard let period = periods.first(where: { $0.depositDate == depositDate }) else { return nil }
+        let includeOtherIncome = (try setting("include_other_income_in_pay_periods")) != "false"
+        guard let summary = PlanningEngine.summaries(periods: periods, items: allItems, salaryCategoryIDs: salaryCategories, includeOtherIncome: includeOtherIncome).first(where: { $0.period.depositDate == depositDate }) else { return nil }
+        let depositsByID = Dictionary(uniqueKeysWithValues: allItems.compactMap { item in item.type == .deposit ? item.id.map { ($0, item) } : nil })
+        let sort: (Item, Item) -> Bool = { $0.date == $1.date ? ($0.id ?? 0) < ($1.id ?? 0) : $0.date < $1.date }
+        let expenses = allItems.filter { PlanningEngine.isAssigned($0, to: period, depositsByID: depositsByID, periods: periods) }.sorted(by: sort)
+        let movedAway = allItems.filter { item in
+            guard !item.deleted, item.type != .deposit, item.assignmentOverride, !PlanningEngine.isAssigned(item, to: period, depositsByID: depositsByID, periods: periods) else { return false }
+            return item.movedFromDepositItemId.flatMap { depositsByID[$0]?.date } == depositDate
+        }.sorted(by: sort)
+        let salary = allItems.filter { !$0.deleted && $0.type == .deposit && $0.date == depositDate && $0.categoryId.map(salaryCategories.contains) == true }.sorted(by: sort)
+        let otherIncome = includeOtherIncome ? allItems.filter { item in
+            guard !item.deleted, item.type == .deposit, item.categoryId.map({ !salaryCategories.contains($0) }) ?? true else { return false }
+            return PlanningEngine.coveringPeriod(date: item.date, periods: periods)?.depositDate == depositDate
+        }.sorted(by: sort) : []
+        return PayPeriodDetail(summary: summary, salaryDeposits: salary, assignedExpenses: expenses, movedAwayExpenses: movedAway, supplementalIncome: otherIncome)
+    }
     public func balances(today: String, through end: String) throws -> (actual: Int, projected: Int) {
         let items = try visibleItems(from: "0001-01-01", through: "9999-12-31")
         let startingBalance = Int(try setting("starting_balance_cents") ?? "0") ?? 0

@@ -17,6 +17,14 @@ public struct PayPeriodSummary: Equatable, Sendable {
     public var isOverdrawn: Bool { remainingCents < 0 }
 }
 
+public struct PayPeriodDetail: Equatable, Sendable {
+    public let summary: PayPeriodSummary
+    public let salaryDeposits: [Item]
+    public let assignedExpenses: [Item]
+    public let movedAwayExpenses: [Item]
+    public let supplementalIncome: [Item]
+}
+
 public enum PlanningEngine {
     public static func deriveSalaryPeriods(_ deposits: [Item], salaryCategoryIDs: Set<Int64>, today: String) -> [DepositPeriod] {
         let salary = deposits.filter { !$0.deleted && $0.type == .deposit && $0.categoryId.map(salaryCategoryIDs.contains) == true }.sorted { $0.date < $1.date }
@@ -51,6 +59,14 @@ public enum PlanningEngine {
             carryIn = leftAfterPlans
             return summary
         }
+    }
+
+    public static func isAssigned(_ item: Item, to period: DepositPeriod, depositsByID: [Int64: Item], periods: [DepositPeriod]) -> Bool {
+        guard !item.deleted, item.type != .deposit else { return false }
+        if item.assignmentOverride {
+            return item.assignedDepositItemId.flatMap { depositsByID[$0]?.date } == period.depositDate
+        }
+        return coveringPeriod(date: item.date, periods: periods)?.depositDate == period.depositDate
     }
 
     public static func actualBalance(items: [Item], startingBalanceCents: Int, adjustments: [BalanceAdjustment], asOf date: String) -> Int {

@@ -83,15 +83,49 @@ private struct InsightsScreen: View {
     @State private var summaries: [PayPeriodSummary] = []
     @State private var actual = 0
     @State private var projected = 0
+    @State private var detailTarget: PayPeriodDetailTarget?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Insights").font(.largeTitle.bold())
             HStack(spacing: 14) { InsightCard(title: "Actual balance", amount: actual, tint: .green); InsightCard(title: "Projected balance", amount: projected, tint: projected < 0 ? .red : .purple) }
             if summaries.isEmpty { ContentUnavailableView("No salary pay periods", systemImage: "calendar.badge.exclamationmark", description: Text("Mark an income source as Salary and add a deposit to see paycheck planning.")) }
-            else { List(summaries, id: \.period.depositDate) { summary in HStack { VStack(alignment: .leading) { Text(summary.period.status == .current ? "This paycheck" : "Paycheck of \(summary.period.depositDate)").fontWeight(summary.period.status == .current ? .bold : .regular); Text("\(summary.period.depositDate) – \(summary.period.endDate == "2099-12-31" ? "ongoing" : NativeDate.dayBefore(summary.period.endDate))").font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text(NativeCurrency.string(summary.leftAfterPlansCents)).foregroundStyle(summary.leftAfterPlansCents < 0 ? .red : .primary).fontWeight(.semibold); Text("This paycheck: \(NativeCurrency.string(summary.remainingCents)) · \(NativeCurrency.string(summary.assignedExpenseCents)) assigned").font(.caption).foregroundStyle(.secondary) } } } }
+            else { List(summaries, id: \.period.depositDate) { summary in Button { detailTarget = PayPeriodDetailTarget(depositDate: summary.period.depositDate) } label: { HStack { VStack(alignment: .leading) { Text(summary.period.status == .current ? "This paycheck" : "Paycheck of \(summary.period.depositDate)").fontWeight(summary.period.status == .current ? .bold : .regular); Text("\(summary.period.depositDate) – \(summary.period.endDate == "2099-12-31" ? "ongoing" : NativeDate.dayBefore(summary.period.endDate))").font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text(NativeCurrency.string(summary.leftAfterPlansCents)).foregroundStyle(summary.leftAfterPlansCents < 0 ? .red : .primary).fontWeight(.semibold); Text("This paycheck: \(NativeCurrency.string(summary.remainingCents)) · \(NativeCurrency.string(summary.assignedExpenseCents)) assigned").font(.caption).foregroundStyle(.secondary) }; Image(systemName: "chevron.right").foregroundStyle(.tertiary) } }.buttonStyle(.plain) } }
         }.padding().task { load() }
+            .sheet(item: $detailTarget) { target in PayPeriodDetailScreen(service: service, depositDate: target.depositDate) { load() } }
     }
     private func load() { let today = NativeDate.string(Date()); do { summaries = try service.payPeriodSummaries(today: today); let active = summaries.first(where: { $0.period.status == .current }) ?? summaries.last; let end = active?.period.endDate == "2099-12-31" ? today : active.map { NativeDate.dayBefore($0.period.endDate) } ?? today; let balances = try service.balances(today: today, through: end); actual = balances.actual; projected = balances.projected } catch { summaries = [] } }
+}
+
+private struct PayPeriodDetailTarget: Identifiable { let depositDate: String; var id: String { depositDate } }
+
+private struct PayPeriodDetailScreen: View {
+    let service: BudgetService; let depositDate: String; let onChanged: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var detail: PayPeriodDetail?
+    @State private var editingItem: Item?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack { VStack(alignment: .leading) { Text("Paycheck details").font(.title2.bold()); Text(periodLabel).foregroundStyle(.secondary) }; Spacer(); Button("Done") { dismiss() } }
+            if let detail {
+                HStack(spacing: 12) { InsightCard(title: "Paycheck", amount: detail.summary.period.depositAmountCents, tint: .green); InsightCard(title: "Assigned", amount: detail.summary.assignedExpenseCents, tint: .pink); InsightCard(title: "Available after plans", amount: detail.summary.leftAfterPlansCents, tint: detail.summary.leftAfterPlansCents < 0 ? .red : .purple) }
+                List {
+                    Section("Salary deposits") { ForEach(detail.salaryDeposits) { ItemRow(item: $0) } }
+                    if !detail.supplementalIncome.isEmpty { Section("Other income") { ForEach(detail.supplementalIncome) { ItemRow(item: $0) } } }
+                    Section("Bills and purchases") {
+                        if detail.assignedExpenses.isEmpty { Text("No bills or purchases are assigned to this paycheck.").foregroundStyle(.secondary) }
+                        ForEach(detail.assignedExpenses) { item in Button { editingItem = item } label: { HStack { ItemRow(item: item); Image(systemName: item.assignmentOverride ? "arrow.left.arrow.right.circle" : "calendar").foregroundStyle(.secondary) } }.buttonStyle(.plain) }
+                    }
+                    if !detail.movedAwayExpenses.isEmpty { Section("Moved or unassigned") { ForEach(detail.movedAwayExpenses) { item in Button { editingItem = item } label: { HStack { ItemRow(item: item); Text(item.assignedDepositItemId == nil ? "Unassigned" : "Moved").font(.caption).foregroundStyle(.secondary) } }.buttonStyle(.plain) } } }
+                }
+            } else if let error { ContentUnavailableView("Unable to load paycheck", systemImage: "exclamationmark.triangle", description: Text(error)) }
+            else { ProgressView("Loading paycheck…") }
+        }.padding(24).frame(minWidth: 620, minHeight: 500).task { load() }
+            .sheet(item: $editingItem) { item in PaycheckAssignmentEditor(service: service, item: item) { load(); onChanged() } }
+    }
+    private var periodLabel: String { guard let period = detail?.summary.period else { return depositDate }; return period.endDate == "2099-12-31" ? "From \(period.depositDate) onward" : "\(period.depositDate) – \(NativeDate.dayBefore(period.endDate))" }
+    private func load() { do { detail = try service.payPeriodDetail(depositDate: depositDate, today: NativeDate.string(Date())); error = nil } catch { self.error = error.localizedDescription } }
 }
 
 private struct InsightCard: View { let title: String; let amount: Int; let tint: Color; var body: some View { VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); Text(NativeCurrency.string(amount)).font(.title2.bold()).foregroundStyle(tint) }.frame(maxWidth: .infinity, alignment: .leading).padding().background(.quaternary, in: RoundedRectangle(cornerRadius: 12)) } }

@@ -117,6 +117,27 @@ final class BudgetServiceTests: XCTestCase {
         XCTAssertEqual(try service.payPeriodSummaries(today: "2026-08-06").first?.period.depositAmountCents, 2_000_00)
     }
 
+    func testPayPeriodDetailSeparatesSalaryExpensesAndSupplementalIncome() throws {
+        let service = try service()
+        let salary = try XCTUnwrap(try service.categories().first { $0.incomeType == "salary" })
+        let otherIncome = try XCTUnwrap(try service.categories().first { $0.incomeType == "other" })
+        let firstPay = try service.saveItem(Item(name: "Pay one", amountCents: 2_000_00, type: .deposit, date: "2026-08-01", categoryId: salary.id))
+        let secondPay = try service.saveItem(Item(name: "Pay two", amountCents: 2_000_00, type: .deposit, date: "2026-08-15", categoryId: salary.id))
+        let moved = try service.saveItem(Item(name: "Moved bill", amountCents: 400_00, type: .bill, date: "2026-08-04"))
+        _ = try service.saveItem(Item(name: "Regular bill", amountCents: 300_00, type: .bill, date: "2026-08-05"))
+        _ = try service.saveItem(Item(name: "Gift", amountCents: 125_00, type: .deposit, date: "2026-08-08", categoryId: otherIncome.id))
+        try service.assignToPaycheck(itemID: moved.id!, depositItemID: secondPay.id!, note: "Pay later", targetDate: "2026-08-16")
+        let first = try XCTUnwrap(service.payPeriodDetail(depositDate: firstPay.date, today: "2026-08-06"))
+        XCTAssertEqual(first.salaryDeposits.map(\.id), [firstPay.id])
+        XCTAssertEqual(first.assignedExpenses.map(\.name), ["Regular bill"])
+        XCTAssertEqual(first.movedAwayExpenses.map(\.name), ["Moved bill"])
+        XCTAssertEqual(first.supplementalIncome.map(\.name), ["Gift"])
+        let second = try XCTUnwrap(service.payPeriodDetail(depositDate: secondPay.date, today: "2026-08-06"))
+        XCTAssertEqual(second.assignedExpenses.map(\.name), ["Moved bill"])
+        XCTAssertTrue(second.movedAwayExpenses.isEmpty)
+        XCTAssertEqual(second.summary.assignedExpenseCents, 400_00)
+    }
+
     func testPayPeriodAvailableBalanceCarriesForwardAndCanExcludeOtherIncome() throws {
         let service = try service()
         let salary = try service.categories().first { $0.incomeType == "salary" }!
