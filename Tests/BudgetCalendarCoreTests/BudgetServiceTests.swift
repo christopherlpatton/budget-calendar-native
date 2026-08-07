@@ -101,6 +101,29 @@ final class BudgetServiceTests: XCTestCase {
         XCTAssertEqual(items.first { $0.date == "2026-08-10" }?.movedFromDate, "2026-08-08")
     }
 
+    func testScopeEditsCanClearFieldsAndScopeDeletesEndTheSeries() throws {
+        let service = try service()
+        let category = try XCTUnwrap(try service.categories().first)
+        let first = try service.createRecurringItem(Item(name: "Subscription", amountCents: 1200, type: .bill, date: "2026-08-01", categoryId: category.id, note: "old"), rule: RecurringRule(kind: .weekly, anchorDate: "2026-08-01", weekday: 6), materializeThrough: "2026-08-22")
+        let middle = try XCTUnwrap(try service.visibleItems(from: "2026-08-01", through: "2026-08-22").first { $0.date == "2026-08-08" })
+        _ = try service.editOccurrence(id: middle.id!, scope: .all, changes: ItemChanges(categoryId: nil, setCategoryId: true, note: nil, setNote: true))
+        XCTAssertTrue(try service.visibleItems(from: "2026-08-01", through: "2026-08-22").filter { $0.ruleId == first.ruleId }.allSatisfy { $0.categoryId == nil && $0.note == nil })
+        _ = try service.deleteOccurrence(id: middle.id!, scope: .thisAndFuture)
+        XCTAssertEqual(try service.visibleItems(from: "2026-08-01", through: "2026-08-22").filter { $0.ruleId == first.ruleId }.map(\.date), ["2026-08-01"])
+        XCTAssertEqual(try service.rules().first { $0.id == first.ruleId }?.endDate, "2026-08-07")
+    }
+
+    func testThisAndFutureEditKeepsPaidStateOnlyOnSelectedReplacement() throws {
+        let service = try service()
+        let created = try service.createRecurringItem(Item(name: "Allowance", amountCents: 1000, type: .deposit, date: "2026-08-01"), rule: RecurringRule(kind: .weekly, anchorDate: "2026-08-01", weekday: 6), materializeThrough: "2026-08-22")
+        let selected = try XCTUnwrap(try service.visibleItems(from: "2026-08-01", through: "2026-08-22").first { $0.date == "2026-08-08" })
+        _ = try service.editOccurrence(id: selected.id!, scope: .thisAndFuture, changes: ItemChanges(name: "Updated allowance"), paid: true, paidDate: "2026-08-08")
+        let replacements = try service.visibleItems(from: "2026-08-01", through: "2026-08-22").filter { $0.ruleId == created.ruleId }
+        XCTAssertEqual(replacements.first { $0.date == "2026-08-08" }?.status, .paid)
+        XCTAssertEqual(replacements.first { $0.date == "2026-08-08" }?.paidDate, "2026-08-08")
+        XCTAssertTrue(replacements.filter { $0.date > "2026-08-08" }.allSatisfy { $0.status == .planned && $0.paidDate == nil })
+    }
+
     func testRecurringCreationNormalizesWeeklyRuleAndPersistsMonthlyClamping() throws {
         let service = try service()
         let weekly = try service.createRecurringItem(Item(name: "Friday", amountCents: 1000, type: .bill, date: "2026-08-04"), rule: RecurringRule(kind: .weekly, anchorDate: "2026-08-04", weekday: 5), materializeThrough: "2026-08-20")

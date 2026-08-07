@@ -103,6 +103,7 @@ private struct ItemRow: View {
 
 private struct EditorTarget: Identifiable { let id = UUID(); let item: Item? }
 private enum ScheduleChoice: String, CaseIterable, Identifiable { case none, weekly, biweekly, monthly, monthlyNth; var id: String { rawValue }; var label: String { switch self { case .none: "Does not repeat"; case .weekly: "Every week"; case .biweekly: "Every 2 weeks"; case .monthly: "Every month on this date"; case .monthlyNth: "Every month on this weekday" } } }
+private enum ScopeChoice: String, CaseIterable, Identifiable { case onlyThis, thisAndFuture, all; var id: String { rawValue }; var label: String { switch self { case .onlyThis: "Only this occurrence"; case .thisAndFuture: "This and future occurrences"; case .all: "Every occurrence" } } }
 
 private struct TransactionEditor: View {
     let service: BudgetService
@@ -118,6 +119,8 @@ private struct TransactionEditor: View {
     @State private var note: String
     @State private var paid: Bool
     @State private var schedule: ScheduleChoice
+    @State private var scope: ScopeChoice = .onlyThis
+    @State private var showingDeleteConfirmation = false
     @State private var error: String?
 
     init(service: BudgetService, categories: [Category], existing: Item?, onSave: @escaping () -> Void) {
@@ -139,17 +142,29 @@ private struct TransactionEditor: View {
                 TextField("Name", text: $name)
                 TextField("Amount", text: $amount).textFieldStyle(.roundedBorder)
                 Picker("Type", selection: $type) { Text("Bill").tag(ItemType.bill); Text("Purchase").tag(ItemType.purchase); Text("Deposit").tag(ItemType.deposit) }
-                DatePicker("Date", selection: $date, displayedComponents: .date)
+                DatePicker("Date", selection: $date, displayedComponents: .date).disabled(isRecurring && scope != .onlyThis)
                 Picker("Category", selection: $categoryId) { Text("None").tag(Int64?.none); ForEach(categories) { category in Text(category.name).tag(category.id) } }
                 Toggle("Paid / received", isOn: $paid)
                 if existing == nil { Picker("Repeat", selection: $schedule) { ForEach(ScheduleChoice.allCases) { Text($0.label).tag($0) } } }
-                else if existing?.ruleId != nil { Text("Changes to this recurring transaction apply only to this occurrence.").font(.caption).foregroundStyle(.secondary) }
+                else if isRecurring {
+                    Picker("Apply changes", selection: $scope) { ForEach(ScopeChoice.allCases) { Text($0.label).tag($0) } }
+                    if scope != .onlyThis { Text("The repeating date pattern stays unchanged when updating a series.").font(.caption).foregroundStyle(.secondary) }
+                }
                 TextField("Note", text: $note, axis: .vertical)
             }
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
-            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { save() }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || NativeMoney.cents(amount) == nil) }
+            HStack {
+                if existing != nil { Button("Delete", role: .destructive) { showingDeleteConfirmation = true } }
+                Spacer(); Button("Cancel") { dismiss() }; Button("Save") { save() }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || NativeMoney.cents(amount) == nil)
+            }
         }.padding(24).frame(width: 460)
+            .alert(deleteTitle, isPresented: $showingDeleteConfirmation) { Button("Delete", role: .destructive) { delete() }; Button("Cancel", role: .cancel) {} } message: { Text(deleteMessage) }
     }
+
+    private var isRecurring: Bool { existing?.ruleId != nil }
+    private var occurrenceScope: OccurrenceScope { switch scope { case .onlyThis: .onlyThis; case .thisAndFuture: .thisAndFuture; case .all: .all } }
+    private var deleteTitle: String { isRecurring ? "Delete \(scope.label.lowercased())?" : "Delete transaction?" }
+    private var deleteMessage: String { isRecurring ? "This affects \(scope.label.lowercased())." : "This cannot be undone." }
 
     private func save() {
         guard let cents = NativeMoney.cents(amount), cents > 0 else { error = "Enter an amount greater than zero."; return }
@@ -157,8 +172,8 @@ private struct TransactionEditor: View {
         let item = Item(id: existing?.id, name: name.trimmingCharacters(in: .whitespacesAndNewlines), amountCents: cents, type: type, date: NativeDate.string(date), categoryId: categoryId, note: note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : note, priority: existing?.priority ?? 0, status: paid ? .paid : .planned, paidDate: paid ? (existing?.paidDate ?? NativeDate.string(Date())) : nil, ruleId: existing?.ruleId, isOverride: existing?.isOverride ?? false, deleted: existing?.deleted ?? false, assignmentOverride: existing?.assignmentOverride ?? false, assignedDepositItemId: existing?.assignedDepositItemId, assignmentNote: existing?.assignmentNote, movedFromDepositItemId: existing?.movedFromDepositItemId, movedFromDate: existing?.movedFromDate, createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp)
         do {
             if let existing, existing.ruleId != nil {
-                _ = try service.editOccurrence(id: existing.id!, scope: .onlyThis, changes: ItemChanges(name: item.name, amountCents: item.amountCents, type: item.type, date: item.date, categoryId: item.categoryId, note: item.note, priority: item.priority))
-                try service.setPaid(id: existing.id!, paid: item.status == .paid, paidDate: item.paidDate)
+                _ = try service.editOccurrence(id: existing.id!, scope: occurrenceScope, changes: ItemChanges(name: item.name, amountCents: item.amountCents, type: item.type, date: scope == .onlyThis ? item.date : nil, categoryId: item.categoryId, setCategoryId: true, note: item.note, setNote: true, priority: item.priority), paid: scope == .thisAndFuture ? item.status == .paid : nil, paidDate: item.paidDate)
+                if scope != .thisAndFuture { try service.setPaid(id: existing.id!, paid: item.status == .paid, paidDate: item.paidDate) }
             } else if schedule == .none { _ = try service.saveItem(item) }
             else {
                 let calendar = Calendar.current
@@ -172,6 +187,12 @@ private struct TransactionEditor: View {
             }
             onSave(); dismiss()
         } catch { self.error = error.localizedDescription }
+    }
+
+    private func delete() {
+        guard let existing, let id = existing.id else { return }
+        do { _ = try service.deleteOccurrence(id: id, scope: isRecurring ? occurrenceScope : .all); onSave(); dismiss() }
+        catch { error = error.localizedDescription }
     }
 }
 
@@ -194,7 +215,15 @@ private struct SettingsScreen: View {
         }.formStyle(.grouped).padding()
             .alert("Delete all Budget Calendar data?", isPresented: $showingResetConfirmation) { Button("Delete all data", role: .destructive) { reset() }; Button("Cancel", role: .cancel) {} } message: { Text("This cannot be undone. Create a backup first if you may need this data later.") }
     }
-    private func exportCSV() { do { guard let url = NativeFilePanels.save(name: "budget-transactions.csv", type: .commaSeparatedText) else { return }; let categories = Dictionary(uniqueKeysWithValues: try service.categories().compactMap { category in category.id.map { id in (id, category) } }); let content = CSVService.export(items: try service.visibleItems(from: "0001-01-01", through: "9999-12-31"), categories: categories); try Data(("\u{FEFF}" + content).write(to: url, atomically: true, encoding: .utf8); message = "Exported CSV to \(url.lastPathComponent)." } catch { message = error.localizedDescription } }
+    private func exportCSV() {
+        do {
+            guard let url = NativeFilePanels.save(name: "budget-transactions.csv", type: .commaSeparatedText) else { return }
+            let categories = Dictionary(uniqueKeysWithValues: try service.categories().compactMap { category in category.id.map { id in (id, category) } })
+            let content = CSVService.export(items: try service.visibleItems(from: "0001-01-01", through: "9999-12-31"), categories: categories)
+            try Data(("\u{FEFF}" + content).utf8).write(to: url, options: .atomic)
+            message = "Exported CSV to \(url.lastPathComponent)."
+        } catch { message = error.localizedDescription }
+    }
     private func importCSV() { do { guard let url = NativeFilePanels.open(type: .commaSeparatedText) else { return }; let result = try service.importTransactionsCSV(String(decoding: Data(contentsOf: url), as: UTF8.self)); message = "Imported \(result.imported) transaction\(result.imported == 1 ? "" : "s"); skipped \(result.skipped)." } catch { message = error.localizedDescription } }
     private func backup() { do { guard let url = NativeFilePanels.save(name: "budget-backup.sqlite", type: UTType(filenameExtension: "sqlite") ?? .data) else { return }; try BackupService.copy(database: database.database, to: url, source: database.path); message = "Created backup at \(url.lastPathComponent)." } catch { message = error.localizedDescription } }
     private func reset() { do { try service.resetAllData(); message = "All data was deleted and defaults were restored." } catch { message = error.localizedDescription } }
