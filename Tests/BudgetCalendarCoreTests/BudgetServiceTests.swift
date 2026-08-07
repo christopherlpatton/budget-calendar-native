@@ -58,6 +58,21 @@ final class BudgetServiceTests: XCTestCase {
         XCTAssertNil(expense.incomeType)
     }
 
+    func testStartingBalanceAndAdjustmentsFeedBalances() throws {
+        let service = try service()
+        try service.setStartingBalance(cents: 1_000_00)
+        let deposit = try service.createAdjustment(amountCents: 2500, date: "2026-08-02", note: "Cash deposit")
+        let correction = try service.createAdjustment(amountCents: -500, date: "2026-08-03", note: "Correction")
+        XCTAssertEqual(try service.balances(today: "2026-08-02", through: "2026-08-02").actual, 1_025_00)
+        XCTAssertEqual(try service.balances(today: "2026-08-03", through: "2026-08-03").actual, 1_020_00)
+        try service.deleteAdjustment(id: deposit.id!)
+        XCTAssertEqual(try service.adjustments().map(\.id), [correction.id])
+        let auditActions = try service.database.read { db in try String.fetchAll(db, sql: "SELECT action FROM audit_log ORDER BY id") }
+        XCTAssertEqual(auditActions, ["adjust", "adjust", "adjust_delete"])
+        XCTAssertThrowsError(try service.createAdjustment(amountCents: 0, date: "2026-08-03", note: "Nope"))
+        XCTAssertThrowsError(try service.createAdjustment(amountCents: 100, date: "2026-08-03", note: " "))
+    }
+
     func testPayPeriodSummaryUsesOnlySalaryDepositsAndAssignmentRules() throws {
         let service = try service()
         let salary = try service.categories().first { $0.incomeType == "salary" }!

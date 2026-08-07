@@ -197,7 +197,7 @@ private struct TransactionEditor: View {
 }
 
 private enum NativeDate { static func string(_ date: Date) -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date) }; static func date(_ value: String) -> Date? { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.date(from: value) }; static func dayBefore(_ value: String) -> String { guard let date = date(value) else { return value }; return string(Calendar.current.date(byAdding: .day, value: -1, to: date)!) }; static func addingYears(_ years: Int, to date: Date) -> String { string(Calendar.current.date(byAdding: .year, value: years, to: date)!) } }
-private enum NativeMoney { static func cents(_ value: String) -> Int? { let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.numberStyle = .decimal; guard let amount = formatter.number(from: value)?.decimalValue else { return nil }; return NSDecimalNumber(decimal: amount * 100).rounding(accordingToBehavior: NSDecimalNumberHandler(roundingMode: .plain, scale: 0, raiseOnExactness: false, raiseOnOverflow: true, raiseOnUnderflow: true, raiseOnDivideByZero: true)).intValue } }
+private enum NativeMoney { static func cents(_ value: String) -> Int? { let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.numberStyle = .decimal; guard let amount = formatter.number(from: value)?.decimalValue else { return nil }; return NSDecimalNumber(decimal: amount * 100).rounding(accordingToBehavior: NSDecimalNumberHandler(roundingMode: .plain, scale: 0, raiseOnExactness: false, raiseOnOverflow: true, raiseOnUnderflow: true, raiseOnDivideByZero: true)).intValue }; static func string(cents: Int) -> String { String(format: "%.2f", Double(cents) / 100) } }
 private enum NativeCurrency { static func string(_ cents: Int) -> String { let formatter = NumberFormatter(); formatter.numberStyle = .currency; return formatter.string(from: NSNumber(value: Double(cents) / 100)) ?? "$0.00" } }
 
 private struct SettingsScreen: View {
@@ -209,9 +209,19 @@ private struct SettingsScreen: View {
     @State private var categoryEditor: CategoryEditorTarget?
     @State private var categoryToDelete: Category?
     @State private var includeOtherIncome = true
+    @State private var adjustments: [BalanceAdjustment] = []
+    @State private var startingBalanceCents = 0
+    @State private var showingAdjustmentEditor = false
+    @State private var adjustmentToDelete: BalanceAdjustment?
     var body: some View {
         Form {
             Section("Data") { LabeledContent("Database", value: BudgetCalendarPaths.database.path).textSelection(.enabled); LabeledContent("Schema", value: "v\(DatabaseCoordinator.supportedSchemaVersion)"); LabeledContent("Journal", value: "SQLite WAL"); Button("Copy backup now") { backup() } }
+            Section("Balance") {
+                LabeledContent("Starting balance", value: NativeCurrency.string(startingBalanceCents))
+                Text("Balance after adjustments: \(NativeCurrency.string(startingBalanceCents + adjustments.reduce(0) { $0 + $1.amountCents }))").font(.caption).foregroundStyle(.secondary)
+                Button("Adjust balance", systemImage: "plusminus") { showingAdjustmentEditor = true }
+                ForEach(adjustments.reversed()) { adjustment in HStack { VStack(alignment: .leading) { Text("\(adjustment.amountCents >= 0 ? "+" : "")\(NativeCurrency.string(adjustment.amountCents))").foregroundStyle(adjustment.amountCents >= 0 ? .green : .red); Text("\(adjustment.date) · \(adjustment.note ?? "")").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Remove", role: .destructive) { adjustmentToDelete = adjustment } } }
+            }
             Section("Income sources") {
                 Text("Salary sources set paycheck boundaries. Other income can add to the available balance without changing those dates.").font(.caption).foregroundStyle(.secondary)
                 ForEach(categories.filter { $0.kind == "deposit" }) { category in CategoryRow(category: category, showIncomeRole: true, canDelete: !category.isBuiltin) { categoryEditor = CategoryEditorTarget(category: category) } onDelete: { categoryToDelete = category } }
@@ -227,14 +237,17 @@ private struct SettingsScreen: View {
             Section("Compatibility") { Text("The native app reads and writes the same database as Budget Calendar 0.1.7. Close the other app before making changes.").foregroundStyle(.secondary) }
             Section("Delete all data") { Text("This permanently removes calendar items, rules, categories, settings, adjustments, and audit history, then restores the defaults.").foregroundStyle(.red); Button("Delete all data", role: .destructive) { showingResetConfirmation = true } }
             if let message { Section { Text(message).font(.caption) } }
-        }.formStyle(.grouped).padding().task { loadCategories() }
-            .sheet(item: $categoryEditor) { target in CategoryEditor(service: service, target: target) { loadCategories() } }
+        }.formStyle(.grouped).padding().task { loadSettings() }
+            .sheet(item: $categoryEditor) { target in CategoryEditor(service: service, target: target) { loadSettings() } }
+            .sheet(isPresented: $showingAdjustmentEditor) { AdjustmentEditor(service: service) { loadSettings() } }
             .alert("Delete all Budget Calendar data?", isPresented: $showingResetConfirmation) { Button("Delete all data", role: .destructive) { reset() }; Button("Cancel", role: .cancel) {} } message: { Text("This cannot be undone. Create a backup first if you may need this data later.") }
             .alert("Remove category?", isPresented: Binding(get: { categoryToDelete != nil }, set: { if !$0 { categoryToDelete = nil } })) { Button("Remove", role: .destructive) { deleteCategory() }; Button("Cancel", role: .cancel) { categoryToDelete = nil } } message: { Text("Transactions in \(categoryToDelete?.name ?? "this category") will become Uncategorized.") }
+            .alert("Delete balance adjustment?", isPresented: Binding(get: { adjustmentToDelete != nil }, set: { if !$0 { adjustmentToDelete = nil } })) { Button("Delete", role: .destructive) { deleteAdjustment() }; Button("Cancel", role: .cancel) { adjustmentToDelete = nil } } message: { Text("This will recalculate the balance.") }
     }
-    private func loadCategories() { do { categories = try service.categories(); includeOtherIncome = try service.setting("include_other_income_in_pay_periods") != "false" } catch { message = error.localizedDescription } }
+    private func loadSettings() { do { categories = try service.categories(); adjustments = try service.adjustments(); includeOtherIncome = try service.setting("include_other_income_in_pay_periods") != "false"; startingBalanceCents = Int(try service.setting("starting_balance_cents") ?? "0") ?? 0 } catch { message = error.localizedDescription } }
     private func setOtherIncome(_ value: Bool) { includeOtherIncome = value; do { try service.setSetting("include_other_income_in_pay_periods", value: value ? "true" : "false") } catch { message = error.localizedDescription } }
-    private func deleteCategory() { guard let category = categoryToDelete, let id = category.id else { return }; do { try service.deleteCategory(id: id); categoryToDelete = nil; loadCategories(); message = "Removed \(category.name)." } catch { message = error.localizedDescription } }
+    private func deleteAdjustment() { guard let adjustment = adjustmentToDelete, let id = adjustment.id else { return }; do { try service.deleteAdjustment(id: id); adjustmentToDelete = nil; loadSettings() } catch { message = error.localizedDescription } }
+    private func deleteCategory() { guard let category = categoryToDelete, let id = category.id else { return }; do { try service.deleteCategory(id: id); categoryToDelete = nil; loadSettings(); message = "Removed \(category.name)." } catch { message = error.localizedDescription } }
     private func exportCSV() {
         do {
             guard let url = NativeFilePanels.save(name: "budget-transactions.csv", type: .commaSeparatedText) else { return }
@@ -246,7 +259,7 @@ private struct SettingsScreen: View {
     }
     private func importCSV() { do { guard let url = NativeFilePanels.open(type: .commaSeparatedText) else { return }; let result = try service.importTransactionsCSV(String(decoding: Data(contentsOf: url), as: UTF8.self)); message = "Imported \(result.imported) transaction\(result.imported == 1 ? "" : "s"); skipped \(result.skipped)." } catch { message = error.localizedDescription } }
     private func backup() { do { guard let url = NativeFilePanels.save(name: "budget-backup.sqlite", type: UTType(filenameExtension: "sqlite") ?? .data) else { return }; try BackupService.copy(database: database.database, to: url, source: database.path); message = "Created backup at \(url.lastPathComponent)." } catch { message = error.localizedDescription } }
-    private func reset() { do { try service.resetAllData(); message = "All data was deleted and defaults were restored." } catch { message = error.localizedDescription } }
+    private func reset() { do { try service.resetAllData(); loadSettings(); message = "All data was deleted and defaults were restored." } catch { message = error.localizedDescription } }
 }
 
 private struct CategoryEditorTarget: Identifiable { let id = UUID(); let category: Category?; let isIncomeSource: Bool; init(category: Category?, isIncomeSource: Bool? = nil) { self.category = category; self.isIncomeSource = isIncomeSource ?? category?.kind == "deposit" } }
@@ -263,6 +276,14 @@ private struct CategoryEditor: View {
     init(service: BudgetService, target: CategoryEditorTarget, onSave: @escaping () -> Void) { self.service = service; self.target = target; self.onSave = onSave; _name = State(initialValue: target.category?.name ?? ""); _color = State(initialValue: target.category?.color ?? (target.isIncomeSource ? "#3aa97c" : "#8b83a3")); _incomeType = State(initialValue: target.category?.incomeType ?? "other") }
     var body: some View { VStack(alignment: .leading, spacing: 16) { Text(target.category == nil ? (target.isIncomeSource ? "Add income source" : "Add expense category") : "Edit \(target.isIncomeSource ? "income source" : "expense category")").font(.title2.bold()); Form { TextField("Name", text: $name); TextField("Color", text: $color); if target.isIncomeSource { Picker("Role", selection: $incomeType) { Text("Salary").tag("salary"); Text("Other income").tag("other") } } }; if let error { Text(error).font(.caption).foregroundStyle(.red) }; HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { save() }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) } }.padding(24).frame(width: 400) }
     private func save() { do { let existing = target.category; let category = Category(id: existing?.id, name: name, color: color, kind: target.isIncomeSource ? "deposit" : existing?.kind ?? "both", isBuiltin: existing?.isBuiltin ?? false, sortOrder: existing?.sortOrder ?? 0, incomeType: target.isIncomeSource ? incomeType : nil); _ = try service.saveCategory(category); onSave(); dismiss() } catch { self.error = error.localizedDescription } }
+}
+
+private struct AdjustmentEditor: View {
+    let service: BudgetService; let onSave: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var amount = ""; @State private var date = Date(); @State private var note = ""; @State private var error: String?
+    var body: some View { VStack(alignment: .leading, spacing: 16) { Text("Adjust balance").font(.title2.bold()); Text("Use a positive amount to add funds or a negative amount to subtract them.").font(.caption).foregroundStyle(.secondary); Form { TextField("Amount", text: $amount); DatePicker("Date", selection: $date, displayedComponents: .date); TextField("Note", text: $note) }; if let error { Text(error).font(.caption).foregroundStyle(.red) }; HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { save() }.buttonStyle(.borderedProminent) } }.padding(24).frame(width: 400) }
+    private func save() { guard let cents = NativeMoney.cents(amount), cents != 0 else { error = "Enter a non-zero amount."; return }; do { _ = try service.createAdjustment(amountCents: cents, date: NativeDate.string(date), note: note); onSave(); dismiss() } catch { self.error = error.localizedDescription } }
 }
 
 private extension Color { init(hex: String) { let value = UInt64(hex.dropFirst(), radix: 16) ?? 0x8b83a3; self.init(red: Double((value >> 16) & 0xff) / 255, green: Double((value >> 8) & 0xff) / 255, blue: Double(value & 0xff) / 255) } }

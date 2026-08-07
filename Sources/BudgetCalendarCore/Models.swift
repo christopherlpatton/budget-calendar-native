@@ -76,6 +76,9 @@ public struct RecurringRule: Codable, FetchableRecord, MutablePersistableRecord,
 
 public struct BalanceAdjustment: Codable, FetchableRecord, MutablePersistableRecord, Identifiable, Sendable {
     public var id: Int64?; public var amountCents: Int; public var date: String; public var note: String?; public var createdAt: String
+    public init(id: Int64? = nil, amountCents: Int, date: String, note: String? = nil, createdAt: String = ISO8601DateFormatter().string(from: Date())) {
+        self.id = id; self.amountCents = amountCents; self.date = date; self.note = note; self.createdAt = createdAt
+    }
     public static let databaseTableName = "balance_adjustments"
     public enum CodingKeys: String, CodingKey { case id, amountCents = "amount_cents", date, note, createdAt = "created_at" }
 }

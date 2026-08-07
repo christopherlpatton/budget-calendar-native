@@ -23,6 +23,24 @@ public final class BudgetService {
         try database.read { db in try Item.fetchAll(db, sql: "SELECT * FROM items WHERE deleted=0 AND date BETWEEN ? AND ? ORDER BY date, id", arguments: [start, end]) }
     }
     public func adjustments() throws -> [BalanceAdjustment] { try database.read { db in try BalanceAdjustment.fetchAll(db, sql: "SELECT * FROM balance_adjustments ORDER BY date, id") } }
+    @discardableResult public func createAdjustment(amountCents: Int, date: String, note: String) throws -> BalanceAdjustment {
+        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard amountCents != 0 else { throw BudgetServiceError("Adjustment amount must not be zero.") }
+        guard validDate(date) else { throw BudgetServiceError("Use a valid adjustment date.") }
+        guard !note.isEmpty else { throw BudgetServiceError("An adjustment note is required.") }
+        var adjustment = BalanceAdjustment(amountCents: amountCents, date: date, note: note)
+        try database.write { db in
+            try adjustment.insert(db)
+            try db.execute(sql: "INSERT INTO audit_log(item_id,action,detail,created_at) VALUES(NULL,?,?,?)", arguments: ["adjust", "Balance adjusted by \(amountCents >= 0 ? "+" : "")\(amountCents) on \(date). Note: \(note)", now()])
+        }
+        return adjustment
+    }
+    public func deleteAdjustment(id: Int64) throws {
+        try database.write { db in
+            try db.execute(sql: "DELETE FROM balance_adjustments WHERE id=?", arguments: [id])
+            try db.execute(sql: "INSERT INTO audit_log(item_id,action,detail,created_at) VALUES(NULL,?,?,?)", arguments: ["adjust_delete", "Deleted adjustment #\(id).", now()])
+        }
+    }
     public func item(id: Int64) throws -> Item? { try database.read { db in try Item.fetchOne(db, key: id) } }
     public func categories() throws -> [Category] { try database.read { db in try Category.fetchAll(db, sql: "SELECT * FROM categories ORDER BY sort_order, id") } }
     @discardableResult public func saveCategory(_ category: Category) throws -> Category {
@@ -52,6 +70,7 @@ public final class BudgetService {
     public func rules() throws -> [RecurringRule] { try database.read { db in try RecurringRule.fetchAll(db, sql: "SELECT * FROM recurring_rules ORDER BY anchor_date, id") } }
     public func setting(_ key: String) throws -> String? { try database.read { db in try String.fetchOne(db, sql: "SELECT value FROM settings WHERE key=?", arguments: [key]) } }
     public func setSetting(_ key: String, value: String) throws { try database.write { db in try db.execute(sql: "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", arguments: [key, value]) } }
+    public func setStartingBalance(cents: Int) throws { try setSetting("starting_balance_cents", value: String(cents)) }
     @discardableResult public func saveItem(_ item: Item) throws -> Item {
         var item = item
         item.updatedAt = now()
