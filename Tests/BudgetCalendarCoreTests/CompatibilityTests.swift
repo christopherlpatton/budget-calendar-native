@@ -30,4 +30,32 @@ final class CompatibilityTests: XCTestCase {
         let coordinator = try DatabaseCoordinator(path: path)
         XCTAssertEqual(try coordinator.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 6)
     }
+
+    func testRestorePreservesExistingDatabaseBeforeReplacingIt() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let active = directory.appendingPathComponent("budget.sqlite")
+        let backup = directory.appendingPathComponent("known-good.sqlite")
+        let oldQueue = try DatabaseQueue(path: active.path)
+        try oldQueue.write { try $0.execute(sql: "CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('old')") }
+        let backupQueue = try DatabaseQueue(path: backup.path)
+        try backupQueue.write { try $0.execute(sql: "PRAGMA journal_mode=WAL; CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('new')") }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path + "-wal"))
+        let preserved = try XCTUnwrap(try BackupService.restore(backup: backup, to: active))
+        XCTAssertEqual(try DatabaseQueue(path: active.path).read { try String.fetchOne($0, sql: "SELECT value FROM marker") }, "new")
+        XCTAssertEqual(try DatabaseQueue(path: preserved.path).read { try String.fetchOne($0, sql: "SELECT value FROM marker") }, "old")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: active.path + "-wal"))
+    }
+
+    func testRestoreRemovesOrphanedDestinationSidecars() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let active = directory.appendingPathComponent("budget.sqlite")
+        let backup = directory.appendingPathComponent("known-good.sqlite")
+        let queue = try DatabaseQueue(path: backup.path)
+        try queue.write { try $0.execute(sql: "CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('restored')") }
+        try Data("orphaned WAL".utf8).write(to: URL(fileURLWithPath: active.path + "-wal"))
+        XCTAssertNil(try BackupService.restore(backup: backup, to: active))
+        XCTAssertEqual(try DatabaseQueue(path: active.path).read { try String.fetchOne($0, sql: "SELECT value FROM marker") }, "restored")
+    }
 }

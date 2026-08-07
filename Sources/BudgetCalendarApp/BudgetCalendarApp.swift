@@ -15,7 +15,7 @@ struct BudgetCalendarApp: App {
                 if let database {
                     MainWindow(database: database)
                 } else if let startupError {
-                    StartupErrorView(message: startupError)
+                    StartupErrorView(message: startupError, retry: { self.startupError = nil; openDatabase() }, restore: restoreBackup)
                 } else {
                     ProgressView("Opening Budget Calendar…")
                 }
@@ -28,6 +28,11 @@ struct BudgetCalendarApp: App {
     private func openDatabase() {
         guard database == nil, startupError == nil else { return }
         do { database = try DatabaseCoordinator() }
+        catch { startupError = error.localizedDescription }
+    }
+    private func restoreBackup() {
+        guard let backup = NativeFilePanels.open(type: UTType(filenameExtension: "sqlite") ?? .data) else { return }
+        do { let preserved = try BackupService.restore(backup: backup); startupError = nil; openDatabase(); if let preserved { print("Preserved previous database at \(preserved.path)") } }
         catch { startupError = error.localizedDescription }
     }
 }
@@ -435,13 +440,14 @@ private enum NativeFilePanels {
 }
 
 private struct StartupErrorView: View {
-    let message: String
+    let message: String; let retry: () -> Void; let restore: () -> Void
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle").font(.largeTitle).foregroundStyle(.orange)
             Text("Budget Calendar could not open").font(.title2.bold())
             Text(message).multilineTextAlignment(.center).frame(maxWidth: 520)
-            Text("Close the Electron app, make a backup of budget.sqlite, and try again.").foregroundStyle(.secondary)
+            Text("Close the Electron app before trying again. You can restore a known-good SQLite backup; the current database file will be preserved beside it.").foregroundStyle(.secondary)
+            HStack { Button("Try again", action: retry); Button("Restore SQLite backup…", action: restore).buttonStyle(.borderedProminent) }
         }.padding(40)
     }
 }
