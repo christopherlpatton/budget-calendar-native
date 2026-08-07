@@ -24,6 +24,20 @@ open "dist/Budget Calendar Native.app"
 
 The script makes `dist/Budget Calendar Native.app` from the release executable. It deliberately does not sign, notarize, publish, or install the app. macOS 14 or later is required.
 
+## Unsigned preview downloads and Gatekeeper
+
+The preview release identifier is recorded in [`VERSION`](VERSION); the numeric macOS marketing version is in [`MARKETING_VERSION`](MARKETING_VERSION). Before opening a downloaded preview, verify that its GitHub Release tag matches the preview identifier and check the accompanying `.sha256` file.
+
+macOS Gatekeeper will warn because the preview is not signed or notarized. To open an app you intentionally downloaded from this repository:
+
+1. In Finder, Control-click **Budget Calendar Native.app** and choose **Open**.
+2. Confirm **Open** in the next dialog. If macOS instead blocks it, open **System Settings → Privacy & Security** and choose **Open Anyway** for this specific app.
+3. Do not disable Gatekeeper globally, remove quarantine attributes with Terminal commands, or bypass the warning for an app from an untrusted source.
+
+The preview has no automatic updates. Delete the old app and download a later GitHub Release when you choose to update. Signing, notarization, and public-release automation are intentionally deferred.
+
+See [RELEASE.md](RELEASE.md) for the pre-release checklist. Do not publish a download until its `swift test`, package build, and copied-database manual check have passed.
+
 ## Shared-data safety
 
 Only one app should write the shared database at a time. The native persistence layer takes an advisory lock, enables SQLite foreign keys/WAL, runs an integrity check before migrations, validates the schema, and refuses unsupported future schema versions.
