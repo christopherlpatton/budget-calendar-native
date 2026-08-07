@@ -7,6 +7,7 @@ import BudgetCalendarCore
 struct BudgetCalendarApp: App {
     @State private var database: DatabaseCoordinator?
     @State private var startupError: String?
+    @AppStorage("nativeAppearance") private var appearance = "system"
 
     var body: some Scene {
         WindowGroup("Budget Calendar") {
@@ -19,7 +20,7 @@ struct BudgetCalendarApp: App {
                     ProgressView("Opening Budget Calendar…")
                 }
             }
-            .task { openDatabase() }
+            .task { openDatabase() }.preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
         }
         .windowResizability(.contentSize)
     }
@@ -35,6 +36,7 @@ private struct MainWindow: View {
     let database: DatabaseCoordinator
     private var service: BudgetService { BudgetService(database: database.database) }
     @State private var selection = "Calendar"
+    @State private var showingFirstRun = false
     var body: some View {
         NavigationSplitView {
             List(["Calendar", "Upcoming", "Insights", "Settings", "Documentation"], id: \.self, selection: $selection) { Text($0) }
@@ -46,9 +48,12 @@ private struct MainWindow: View {
                 case "Upcoming": UpcomingScreen(service: service)
                 case "Insights": InsightsScreen(service: service)
                 case "Settings": SettingsScreen(database: database, service: service)
+                case "Documentation": DocumentationScreen()
                 default: ContentUnavailableView(selection, systemImage: icon, description: Text("This native screen is connected to the shared SQLite database."))
-                }
-            }.frame(minWidth: 720, minHeight: 480)
+            }
+        }.frame(minWidth: 720, minHeight: 480)
+        .task { if (try? service.setting("first_run_complete")) != "true" { showingFirstRun = true } }
+        .sheet(isPresented: $showingFirstRun) { FirstRunSetup(service: service) { showingFirstRun = false } }
         }
     }
     private var icon: String { selection == "Calendar" ? "calendar" : "chart.bar" }
@@ -329,8 +334,12 @@ private struct SettingsScreen: View {
     @State private var startingBalanceCents = 0
     @State private var showingAdjustmentEditor = false
     @State private var adjustmentToDelete: BalanceAdjustment?
+    @AppStorage("nativeAppearance") private var appearance = "system"
+    @State private var showingFirstRun = false
     var body: some View {
         Form {
+            Section("Appearance") { Picker("Theme", selection: $appearance) { Text("System").tag("system"); Text("Light").tag("light"); Text("Dark").tag("dark") }.pickerStyle(.segmented) }
+            Section("Getting started") { Text("Set an opening balance and optionally add your first Salary paycheck. Salary deposits create pay periods.").font(.caption).foregroundStyle(.secondary); Button("Run setup again") { showingFirstRun = true } }
             Section("Data") { LabeledContent("Database", value: BudgetCalendarPaths.database.path).textSelection(.enabled); LabeledContent("Schema", value: "v\(DatabaseCoordinator.supportedSchemaVersion)"); LabeledContent("Journal", value: "SQLite WAL"); Button("Copy backup now") { backup() } }
             Section("Balance") {
                 LabeledContent("Starting balance", value: NativeCurrency.string(startingBalanceCents))
@@ -356,6 +365,7 @@ private struct SettingsScreen: View {
         }.formStyle(.grouped).padding().task { loadSettings() }
             .sheet(item: $categoryEditor) { target in CategoryEditor(service: service, target: target) { loadSettings() } }
             .sheet(isPresented: $showingAdjustmentEditor) { AdjustmentEditor(service: service) { loadSettings() } }
+            .sheet(isPresented: $showingFirstRun) { FirstRunSetup(service: service) { showingFirstRun = false; loadSettings() } }
             .alert("Delete all Budget Calendar data?", isPresented: $showingResetConfirmation) { Button("Delete all data", role: .destructive) { reset() }; Button("Cancel", role: .cancel) {} } message: { Text("This cannot be undone. Create a backup first if you may need this data later.") }
             .alert("Remove category?", isPresented: Binding(get: { categoryToDelete != nil }, set: { if !$0 { categoryToDelete = nil } })) { Button("Remove", role: .destructive) { deleteCategory() }; Button("Cancel", role: .cancel) { categoryToDelete = nil } } message: { Text("Transactions in \(categoryToDelete?.name ?? "this category") will become Uncategorized.") }
             .alert("Delete balance adjustment?", isPresented: Binding(get: { adjustmentToDelete != nil }, set: { if !$0 { adjustmentToDelete = nil } })) { Button("Delete", role: .destructive) { deleteAdjustment() }; Button("Cancel", role: .cancel) { adjustmentToDelete = nil } } message: { Text("This will recalculate the balance.") }
@@ -401,6 +411,21 @@ private struct AdjustmentEditor: View {
     var body: some View { VStack(alignment: .leading, spacing: 16) { Text("Adjust balance").font(.title2.bold()); Text("Use a positive amount to add funds or a negative amount to subtract them.").font(.caption).foregroundStyle(.secondary); Form { TextField("Amount", text: $amount); DatePicker("Date", selection: $date, displayedComponents: .date); TextField("Note", text: $note) }; if let error { Text(error).font(.caption).foregroundStyle(.red) }; HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { save() }.buttonStyle(.borderedProminent) } }.padding(24).frame(width: 400) }
     private func save() { guard let cents = NativeMoney.cents(amount), cents != 0 else { error = "Enter a non-zero amount."; return }; do { _ = try service.createAdjustment(amountCents: cents, date: NativeDate.string(date), note: note); onSave(); dismiss() } catch { self.error = error.localizedDescription } }
 }
+
+private struct FirstRunSetup: View {
+    let service: BudgetService; let onDone: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var startingBalance = ""; @State private var addSalary = false; @State private var salaryAmount = ""; @State private var salaryDate = Date(); @State private var error: String?
+    var body: some View { VStack(alignment: .leading, spacing: 18) { Text("Welcome to Budget Calendar").font(.title.bold()); Text("Your data stays in the shared local SQLite database. Set up the basics now, or add them later in Settings.").foregroundStyle(.secondary); Form { TextField("Starting balance (optional)", text: $startingBalance); Toggle("Add a Salary paycheck", isOn: $addSalary); if addSalary { TextField("Paycheck amount", text: $salaryAmount); DatePicker("Paycheck date", selection: $salaryDate, displayedComponents: .date) } }; if let error { Text(error).font(.caption).foregroundStyle(.red) }; HStack { Button("Skip for now") { finish() }; Spacer(); Button("Finish setup") { save() }.buttonStyle(.borderedProminent) } }.padding(28).frame(width: 480) }
+    private func save() { do { if !startingBalance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { guard let cents = NativeMoney.cents(startingBalance) else { error = "Enter a valid starting balance."; return }; try service.setStartingBalance(cents: cents) }; if addSalary { guard let cents = NativeMoney.cents(salaryAmount), cents > 0, let salary = try service.categories().first(where: { $0.incomeType == "salary" }) else { error = "Enter a positive paycheck amount."; return }; _ = try service.saveItem(Item(name: "Paycheck", amountCents: cents, type: .deposit, date: NativeDate.string(salaryDate), categoryId: salary.id)) }; finish() } catch { self.error = error.localizedDescription } }
+    private func finish() { try? service.setSetting("first_run_complete", value: "true"); onDone(); dismiss() }
+}
+
+private struct DocumentationScreen: View {
+    var body: some View { ScrollView { VStack(alignment: .leading, spacing: 24) { VStack(alignment: .leading, spacing: 8) { Text("Budget Calendar guide").font(.largeTitle.bold()); Text("A practical guide to your calendar, paychecks, balances, and daily spending decisions.").foregroundStyle(.secondary) }; DocumentationSection(title: "Start here", icon: "1.circle") { Text("Add your starting balance in Settings, add Salary deposits for each paycheck, then add bills and planned purchases. Salary sources establish paycheck boundaries; Other Income adds funds without changing those dates.") }; DocumentationSection(title: "Calendar and day sheets", icon: "calendar") { Text("Use the month grid to open a day. Add, edit, mark paid, or assign transactions from the native sheets. Repeating changes can apply to one occurrence, this and future occurrences, or the whole series.") }; DocumentationSection(title: "Paychecks and assignments", icon: "banknote") { Text("A bill or purchase is automatically assigned to the latest Salary paycheck on or before its date. Open a paycheck from Insights to review its plan. Moving or unassigning an item requires a note so the decision remains explainable.") }; DocumentationSection(title: "Balances", icon: "chart.line.uptrend.xyaxis") { Text("Actual balance includes received deposits, paid expenses, and adjustments through the selected date. Projected balance includes future planned transactions. Available after plans is a paycheck-planning figure, not the same as safe-to-spend cash.") }; DocumentationSection(title: "Data and recovery", icon: "externaldrive") { Text("The native and Electron apps use the same database at ~/Library/Application Support/Budget Calendar/budget.sqlite. Close one app before using the other. Make a SQLite backup before significant changes; CSV import is additive and reset restores default categories.") } }.frame(maxWidth: 760, alignment: .leading).padding(32) } }
+}
+
+private struct DocumentationSection<Content: View>: View { let title: String; let icon: String; @ViewBuilder let content: Content; var body: some View { HStack(alignment: .top, spacing: 14) { Image(systemName: icon).font(.title3).foregroundStyle(.tint).frame(width: 28); VStack(alignment: .leading, spacing: 6) { Text(title).font(.title3.bold()); content.foregroundStyle(.secondary) } } } }
 
 private extension Color { init(hex: String) { let value = UInt64(hex.dropFirst(), radix: 16) ?? 0x8b83a3; self.init(red: Double((value >> 16) & 0xff) / 255, green: Double((value >> 8) & 0xff) / 255, blue: Double(value & 0xff) / 255) } }
 
