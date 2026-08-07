@@ -57,6 +57,9 @@ public struct Item: Codable, FetchableRecord, MutablePersistableRecord, Identifi
 public struct Category: Codable, FetchableRecord, MutablePersistableRecord, Identifiable, Sendable {
     public var id: Int64?; public var name: String; public var color: String; public var kind: String
     public var isBuiltin: Bool; public var sortOrder: Int; public var incomeType: String?
+    public init(id: Int64? = nil, name: String, color: String, kind: String, isBuiltin: Bool = false, sortOrder: Int = 0, incomeType: String? = nil) {
+        self.id = id; self.name = name; self.color = color; self.kind = kind; self.isBuiltin = isBuiltin; self.sortOrder = sortOrder; self.incomeType = incomeType
+    }
     public static let databaseTableName = "categories"
     public enum CodingKeys: String, CodingKey { case id, name, color, kind, isBuiltin = "is_builtin", sortOrder = "sort_order", incomeType = "income_type" }
 }

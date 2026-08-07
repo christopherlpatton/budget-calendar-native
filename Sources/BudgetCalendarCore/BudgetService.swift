@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 
 public enum OccurrenceScope: String, Sendable { case onlyThis = "only_this", thisAndFuture = "this_and_future", all }
+public struct BudgetServiceError: LocalizedError { public let message: String; public init(_ message: String) { self.message = message }; public var errorDescription: String? { message } }
 
 public struct ItemChanges: Sendable {
     public var name: String?; public var amountCents: Int?; public var type: ItemType?; public var date: String?
@@ -24,6 +25,30 @@ public final class BudgetService {
     public func adjustments() throws -> [BalanceAdjustment] { try database.read { db in try BalanceAdjustment.fetchAll(db, sql: "SELECT * FROM balance_adjustments ORDER BY date, id") } }
     public func item(id: Int64) throws -> Item? { try database.read { db in try Item.fetchOne(db, key: id) } }
     public func categories() throws -> [Category] { try database.read { db in try Category.fetchAll(db, sql: "SELECT * FROM categories ORDER BY sort_order, id") } }
+    @discardableResult public func saveCategory(_ category: Category) throws -> Category {
+        var category = category
+        category.name = category.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !category.name.isEmpty else { throw BudgetServiceError("A category name is required.") }
+        guard category.color.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil else { throw BudgetServiceError("Use a six-digit hex color, such as #3aa97c.") }
+        guard ["purchase", "bill", "deposit", "both"].contains(category.kind) else { throw BudgetServiceError("Unsupported category type.") }
+        if category.kind != "deposit" { category.incomeType = nil }
+        else if category.incomeType == nil { category.incomeType = "other" }
+        guard category.incomeType == nil || ["salary", "other"].contains(category.incomeType!) else { throw BudgetServiceError("Unsupported income source role.") }
+        try database.write { db in
+            if category.id == nil {
+                category.sortOrder = try Int.fetchOne(db, sql: "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories") ?? 1
+                category.isBuiltin = false
+                try category.insert(db)
+            } else { try category.update(db) }
+        }
+        return category
+    }
+    public func deleteCategory(id: Int64) throws {
+        try database.write { db in
+            try db.execute(sql: "UPDATE items SET category_id=NULL, updated_at=? WHERE category_id=?", arguments: [now(), id])
+            try db.execute(sql: "DELETE FROM categories WHERE id=?", arguments: [id])
+        }
+    }
     public func rules() throws -> [RecurringRule] { try database.read { db in try RecurringRule.fetchAll(db, sql: "SELECT * FROM recurring_rules ORDER BY anchor_date, id") } }
     public func setting(_ key: String) throws -> String? { try database.read { db in try String.fetchOne(db, sql: "SELECT value FROM settings WHERE key=?", arguments: [key]) } }
     public func setSetting(_ key: String, value: String) throws { try database.write { db in try db.execute(sql: "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", arguments: [key, value]) } }

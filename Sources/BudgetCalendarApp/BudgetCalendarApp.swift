@@ -205,16 +205,36 @@ private struct SettingsScreen: View {
     let service: BudgetService
     @State private var message: String?
     @State private var showingResetConfirmation = false
+    @State private var categories: [Category] = []
+    @State private var categoryEditor: CategoryEditorTarget?
+    @State private var categoryToDelete: Category?
+    @State private var includeOtherIncome = true
     var body: some View {
         Form {
             Section("Data") { LabeledContent("Database", value: BudgetCalendarPaths.database.path).textSelection(.enabled); LabeledContent("Schema", value: "v\(DatabaseCoordinator.supportedSchemaVersion)"); LabeledContent("Journal", value: "SQLite WAL"); Button("Copy backup now") { backup() } }
+            Section("Income sources") {
+                Text("Salary sources set paycheck boundaries. Other income can add to the available balance without changing those dates.").font(.caption).foregroundStyle(.secondary)
+                ForEach(categories.filter { $0.kind == "deposit" }) { category in CategoryRow(category: category, showIncomeRole: true, canDelete: !category.isBuiltin) { categoryEditor = CategoryEditorTarget(category: category) } onDelete: { categoryToDelete = category } }
+                Button("Add income source", systemImage: "plus") { categoryEditor = CategoryEditorTarget(category: nil, isIncomeSource: true) }
+                Toggle("Include Other Income in available balance", isOn: Binding(get: { includeOtherIncome }, set: { setOtherIncome($0) }))
+            }
+            Section("Expense categories") {
+                Text("Removing a category keeps its transactions and makes them Uncategorized.").font(.caption).foregroundStyle(.secondary)
+                ForEach(categories.filter { $0.kind != "deposit" }) { category in CategoryRow(category: category, showIncomeRole: false, canDelete: true) { categoryEditor = CategoryEditorTarget(category: category) } onDelete: { categoryToDelete = category } }
+                Button("Add expense category", systemImage: "plus") { categoryEditor = CategoryEditorTarget(category: nil, isIncomeSource: false) }
+            }
             Section("Export") { Button("Export transactions CSV") { exportCSV() }; Button("Import transactions CSV") { importCSV() }; Text("Imports add valid rows without replacing existing items. Recurring export rows become individual calendar entries.").font(.caption).foregroundStyle(.secondary) }
             Section("Compatibility") { Text("The native app reads and writes the same database as Budget Calendar 0.1.7. Close the other app before making changes.").foregroundStyle(.secondary) }
             Section("Delete all data") { Text("This permanently removes calendar items, rules, categories, settings, adjustments, and audit history, then restores the defaults.").foregroundStyle(.red); Button("Delete all data", role: .destructive) { showingResetConfirmation = true } }
             if let message { Section { Text(message).font(.caption) } }
-        }.formStyle(.grouped).padding()
+        }.formStyle(.grouped).padding().task { loadCategories() }
+            .sheet(item: $categoryEditor) { target in CategoryEditor(service: service, target: target) { loadCategories() } }
             .alert("Delete all Budget Calendar data?", isPresented: $showingResetConfirmation) { Button("Delete all data", role: .destructive) { reset() }; Button("Cancel", role: .cancel) {} } message: { Text("This cannot be undone. Create a backup first if you may need this data later.") }
+            .alert("Remove category?", isPresented: Binding(get: { categoryToDelete != nil }, set: { if !$0 { categoryToDelete = nil } })) { Button("Remove", role: .destructive) { deleteCategory() }; Button("Cancel", role: .cancel) { categoryToDelete = nil } } message: { Text("Transactions in \(categoryToDelete?.name ?? "this category") will become Uncategorized.") }
     }
+    private func loadCategories() { do { categories = try service.categories(); includeOtherIncome = try service.setting("include_other_income_in_pay_periods") != "false" } catch { message = error.localizedDescription } }
+    private func setOtherIncome(_ value: Bool) { includeOtherIncome = value; do { try service.setSetting("include_other_income_in_pay_periods", value: value ? "true" : "false") } catch { message = error.localizedDescription } }
+    private func deleteCategory() { guard let category = categoryToDelete, let id = category.id else { return }; do { try service.deleteCategory(id: id); categoryToDelete = nil; loadCategories(); message = "Removed \(category.name)." } catch { message = error.localizedDescription } }
     private func exportCSV() {
         do {
             guard let url = NativeFilePanels.save(name: "budget-transactions.csv", type: .commaSeparatedText) else { return }
@@ -228,6 +248,24 @@ private struct SettingsScreen: View {
     private func backup() { do { guard let url = NativeFilePanels.save(name: "budget-backup.sqlite", type: UTType(filenameExtension: "sqlite") ?? .data) else { return }; try BackupService.copy(database: database.database, to: url, source: database.path); message = "Created backup at \(url.lastPathComponent)." } catch { message = error.localizedDescription } }
     private func reset() { do { try service.resetAllData(); message = "All data was deleted and defaults were restored." } catch { message = error.localizedDescription } }
 }
+
+private struct CategoryEditorTarget: Identifiable { let id = UUID(); let category: Category?; let isIncomeSource: Bool; init(category: Category?, isIncomeSource: Bool? = nil) { self.category = category; self.isIncomeSource = isIncomeSource ?? category?.kind == "deposit" } }
+
+private struct CategoryRow: View {
+    let category: Category; let showIncomeRole: Bool; let canDelete: Bool; let onEdit: () -> Void; let onDelete: () -> Void
+    var body: some View { HStack { Circle().fill(Color(hex: category.color)).frame(width: 10, height: 10); VStack(alignment: .leading) { Text(category.name); Text(showIncomeRole ? (category.incomeType == "salary" ? "Salary — starts pay periods" : "Other income") : (category.kind == "both" ? "Bills & spending" : category.kind)).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Edit", action: onEdit); if canDelete { Button("Remove", role: .destructive, action: onDelete) } } }
+}
+
+private struct CategoryEditor: View {
+    let service: BudgetService; let target: CategoryEditorTarget; let onSave: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String; @State private var color: String; @State private var incomeType: String; @State private var error: String?
+    init(service: BudgetService, target: CategoryEditorTarget, onSave: @escaping () -> Void) { self.service = service; self.target = target; self.onSave = onSave; _name = State(initialValue: target.category?.name ?? ""); _color = State(initialValue: target.category?.color ?? (target.isIncomeSource ? "#3aa97c" : "#8b83a3")); _incomeType = State(initialValue: target.category?.incomeType ?? "other") }
+    var body: some View { VStack(alignment: .leading, spacing: 16) { Text(target.category == nil ? (target.isIncomeSource ? "Add income source" : "Add expense category") : "Edit \(target.isIncomeSource ? "income source" : "expense category")").font(.title2.bold()); Form { TextField("Name", text: $name); TextField("Color", text: $color); if target.isIncomeSource { Picker("Role", selection: $incomeType) { Text("Salary").tag("salary"); Text("Other income").tag("other") } } }; if let error { Text(error).font(.caption).foregroundStyle(.red) }; HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { save() }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) } }.padding(24).frame(width: 400) }
+    private func save() { do { let existing = target.category; let category = Category(id: existing?.id, name: name, color: color, kind: target.isIncomeSource ? "deposit" : existing?.kind ?? "both", isBuiltin: existing?.isBuiltin ?? false, sortOrder: existing?.sortOrder ?? 0, incomeType: target.isIncomeSource ? incomeType : nil); _ = try service.saveCategory(category); onSave(); dismiss() } catch { self.error = error.localizedDescription } }
+}
+
+private extension Color { init(hex: String) { let value = UInt64(hex.dropFirst(), radix: 16) ?? 0x8b83a3; self.init(red: Double((value >> 16) & 0xff) / 255, green: Double((value >> 8) & 0xff) / 255, blue: Double(value & 0xff) / 255) } }
 
 private enum NativeFilePanels {
     static func save(name: String, type: UTType) -> URL? { let panel = NSSavePanel(); panel.nameFieldStringValue = name; panel.allowedContentTypes = [type]; return panel.runModal() == .OK ? panel.url : nil }

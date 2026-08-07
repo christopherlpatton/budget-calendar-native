@@ -44,6 +44,20 @@ final class BudgetServiceTests: XCTestCase {
         XCTAssertEqual(try service.setting("include_other_income_in_pay_periods"), "true")
     }
 
+    func testCategoryManagementPreservesSharedSchemaRules() throws {
+        let service = try service()
+        let newCategory = try service.saveCategory(Category(id: nil, name: " Freelance ", color: "#112233", kind: "deposit", isBuiltin: false, sortOrder: 0, incomeType: "salary"))
+        XCTAssertEqual(newCategory.name, "Freelance")
+        XCTAssertEqual(newCategory.incomeType, "salary")
+        XCTAssertGreaterThan(newCategory.sortOrder, 10)
+        let transaction = try service.saveItem(Item(name: "Contract", amountCents: 50000, type: .deposit, date: "2026-08-06", categoryId: newCategory.id))
+        try service.deleteCategory(id: newCategory.id!)
+        XCTAssertNil(try service.item(id: transaction.id!)?.categoryId)
+        XCTAssertFalse(try service.categories().contains { $0.id == newCategory.id })
+        let expense = try service.saveCategory(Category(id: nil, name: "Pets", color: "#aabbcc", kind: "both", isBuiltin: false, sortOrder: 0, incomeType: "salary"))
+        XCTAssertNil(expense.incomeType)
+    }
+
     func testPayPeriodSummaryUsesOnlySalaryDepositsAndAssignmentRules() throws {
         let service = try service()
         let salary = try service.categories().first { $0.incomeType == "salary" }!
