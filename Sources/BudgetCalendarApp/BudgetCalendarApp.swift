@@ -59,15 +59,43 @@ private struct CalendarScreen: View {
     @State private var items: [Item] = []
     @State private var categories: [Category] = []
     @State private var editor: EditorTarget?
+    @State private var daySheet: CalendarDayTarget?
+    @State private var displayedMonth = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: Date()))!
+    private let columns = Array(repeating: GridItem(.flexible(minimum: 84), spacing: 8), count: 7)
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("Calendar").font(.largeTitle.bold()); Spacer(); Button("Add transaction", systemImage: "plus") { editor = EditorTarget(item: nil) }.buttonStyle(.borderedProminent) }
-            if items.isEmpty { ContentUnavailableView("No calendar items", systemImage: "calendar", description: Text("Add a bill, purchase, or deposit to begin.")) }
-            else { List(items) { item in Button { editor = EditorTarget(item: item) } label: { ItemRow(item: item) }.buttonStyle(.plain).contextMenu { Button(item.status == .paid ? "Mark planned" : "Mark paid") { try? service.setPaid(id: item.id!, paid: item.status != .paid); load() } } } }
+            HStack { Text("Calendar").font(.largeTitle.bold()); Spacer(); Button("Add transaction", systemImage: "plus") { editor = EditorTarget(item: nil, draftDate: Date()) }.buttonStyle(.borderedProminent) }
+            HStack { Button { moveMonth(-1) } label: { Image(systemName: "chevron.left") }; Text(monthTitle).font(.title2.bold()).frame(minWidth: 180); Button { moveMonth(1) } label: { Image(systemName: "chevron.right") }; Spacer(); Button("Today") { displayedMonth = monthStart(Date()); load() } }
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(weekSymbols, id: \.self) { Text($0).font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(maxWidth: .infinity) }
+                ForEach(calendarDays, id: \.self) { day in CalendarDayCell(day: day, month: displayedMonth, items: items.filter { $0.date == NativeDate.string(day) }) { daySheet = CalendarDayTarget(date: day) } }
+            }
         }.padding().task { load() }
-            .sheet(item: $editor) { target in TransactionEditor(service: service, categories: categories, existing: target.item) { load() } }
+            .sheet(item: $editor) { target in TransactionEditor(service: service, categories: categories, existing: target.item, initialDate: target.draftDate) { load() } }
+            .sheet(item: $daySheet) { target in CalendarDaySheet(service: service, categories: categories, date: target.date) { load() } }
     }
-    private func load() { let calendar = Calendar.current; let now = Date(); let start = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!; let end = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: start)!; items = (try? service.visibleItems(from: NativeDate.string(start), through: NativeDate.string(end))) ?? []; categories = (try? service.categories()) ?? [] }
+    private var monthTitle: String { displayedMonth.formatted(.dateTime.month(.wide).year()) }
+    private var weekSymbols: [String] { let symbols = Calendar.current.shortWeekdaySymbols; let first = Calendar.current.firstWeekday - 1; return Array(symbols[first...]) + Array(symbols[..<first]) }
+    private var calendarDays: [Date] { let calendar = Calendar.current; let start = monthStart(displayedMonth); let leading = calendar.component(.weekday, from: start) - calendar.firstWeekday; let normalizedLeading = leading < 0 ? leading + 7 : leading; let first = calendar.date(byAdding: .day, value: -normalizedLeading, to: start)!; let monthEnd = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: start)!; let ending = calendar.component(.weekday, from: monthEnd) - calendar.firstWeekday; let normalizedEnding = ending < 0 ? ending + 7 : ending; let trailing = 6 - normalizedEnding; return (0..<(normalizedLeading + calendar.component(.day, from: monthEnd) + trailing)).compactMap { calendar.date(byAdding: .day, value: $0, to: first) } }
+    private func monthStart(_ date: Date) -> Date { Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: date))! }
+    private func moveMonth(_ amount: Int) { displayedMonth = Calendar.current.date(byAdding: .month, value: amount, to: displayedMonth)!; load() }
+    private func load() { let calendar = Calendar.current; let start = monthStart(displayedMonth); let end = calendar.date(byAdding: DateComponents(month: 1, day: -1), to: start)!; let materializeStart = calendar.date(byAdding: .year, value: -1, to: start)!; let materializeEnd = calendar.date(byAdding: .year, value: 1, to: end)!; for id in ((try? service.rules()) ?? []).compactMap(\.id) { _ = try? service.materialize(ruleId: id, from: NativeDate.string(materializeStart), through: NativeDate.string(materializeEnd)) }; items = (try? service.visibleItems(from: NativeDate.string(start), through: NativeDate.string(end))) ?? []; categories = (try? service.categories()) ?? [] }
+}
+
+private struct CalendarDayTarget: Identifiable { let date: Date; var id: String { NativeDate.string(date) } }
+
+private struct CalendarDayCell: View {
+    let day: Date; let month: Date; let items: [Item]; let open: () -> Void
+    var body: some View { Button(action: open) { VStack(alignment: .leading, spacing: 4) { HStack { Text(day.formatted(.dateTime.day())).fontWeight(Calendar.current.isDateInToday(day) ? .bold : .regular).foregroundStyle(isInMonth ? .primary : .tertiary); Spacer(); if !items.isEmpty { Text("\(items.count)").font(.caption2).foregroundStyle(.secondary) } }; ForEach(items.prefix(2)) { item in Text("\(item.type == .deposit ? "+" : "−") \(item.name)").font(.caption2).lineLimit(1).foregroundStyle(item.type == .deposit ? .green : .primary) }; if items.count > 2 { Text("+ \(items.count - 2) more").font(.caption2).foregroundStyle(.secondary) }; Spacer(minLength: 0) }.padding(7).frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading).background(Calendar.current.isDateInToday(day) ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(isInMonth ? 0.06 : 0.025), in: RoundedRectangle(cornerRadius: 8)) }.buttonStyle(.plain).disabled(!isInMonth) }
+    private var isInMonth: Bool { Calendar.current.isDate(day, equalTo: month, toGranularity: .month) }
+}
+
+private struct CalendarDaySheet: View {
+    let service: BudgetService; let categories: [Category]; let date: Date; let onChanged: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var items: [Item] = []; @State private var editor: EditorTarget?
+    var body: some View { VStack(alignment: .leading, spacing: 16) { HStack { VStack(alignment: .leading) { Text(date.formatted(.dateTime.weekday(.wide).month(.wide).day())).font(.title2.bold()); Text("Transactions for this day").foregroundStyle(.secondary) }; Spacer(); Button("Add", systemImage: "plus") { editor = EditorTarget(item: nil, draftDate: date) }.buttonStyle(.borderedProminent); Button("Done") { dismiss() } }; if items.isEmpty { ContentUnavailableView("Nothing scheduled", systemImage: "calendar", description: Text("Add a transaction for this day.")) } else { List(items) { item in Button { editor = EditorTarget(item: item) } label: { ItemRow(item: item) }.buttonStyle(.plain).contextMenu { Button(item.status == .paid ? "Mark planned" : "Mark paid") { try? service.setPaid(id: item.id!, paid: item.status != .paid); load(); onChanged() } } } } }.padding(24).frame(minWidth: 460, minHeight: 360).task { load() }.sheet(item: $editor) { target in TransactionEditor(service: service, categories: categories, existing: target.item, initialDate: target.draftDate) { load(); onChanged() } } }
+    private func load() { let value = NativeDate.string(date); items = (try? service.visibleItems(from: value, through: value)) ?? [] }
 }
 
 private struct UpcomingScreen: View {
@@ -135,7 +163,7 @@ private struct ItemRow: View {
     var body: some View { HStack { Image(systemName: item.type == .deposit ? "arrow.down.circle.fill" : "arrow.up.circle").foregroundStyle(item.type == .deposit ? .green : .pink); VStack(alignment: .leading) { Text(item.name); Text(item.date).font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(String(format: "$%.2f", Double(item.amountCents) / 100)).monospacedDigit(); if item.status == .paid { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) } } }
 }
 
-private struct EditorTarget: Identifiable { let id = UUID(); let item: Item? }
+private struct EditorTarget: Identifiable { let id = UUID(); let item: Item?; let draftDate: Date?; init(item: Item?, draftDate: Date? = nil) { self.item = item; self.draftDate = draftDate } }
 private enum ScheduleChoice: String, CaseIterable, Identifiable { case none, weekly, biweekly, monthly, monthlyNth; var id: String { rawValue }; var label: String { switch self { case .none: "Does not repeat"; case .weekly: "Every week"; case .biweekly: "Every 2 weeks"; case .monthly: "Every month on this date"; case .monthlyNth: "Every month on this weekday" } } }
 private enum ScopeChoice: String, CaseIterable, Identifiable { case onlyThis, thisAndFuture, all; var id: String { rawValue }; var label: String { switch self { case .onlyThis: "Only this occurrence"; case .thisAndFuture: "This and future occurrences"; case .all: "Every occurrence" } } }
 
@@ -143,6 +171,7 @@ private struct TransactionEditor: View {
     let service: BudgetService
     let categories: [Category]
     let existing: Item?
+    let initialDate: Date?
     let onSave: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
@@ -158,12 +187,13 @@ private struct TransactionEditor: View {
     @State private var showingAssignmentEditor = false
     @State private var error: String?
 
-    init(service: BudgetService, categories: [Category], existing: Item?, onSave: @escaping () -> Void) {
+    init(service: BudgetService, categories: [Category], existing: Item?, initialDate: Date? = nil, onSave: @escaping () -> Void) {
         self.service = service; self.categories = categories; self.existing = existing; self.onSave = onSave
         _name = State(initialValue: existing?.name ?? "")
         _amount = State(initialValue: existing.map { String(format: "%.2f", Double($0.amountCents) / 100) } ?? "")
         _type = State(initialValue: existing?.type ?? .bill)
-        _date = State(initialValue: existing.flatMap { NativeDate.date($0.date) } ?? Date())
+        self.initialDate = initialDate
+        _date = State(initialValue: existing.flatMap { NativeDate.date($0.date) } ?? initialDate ?? Date())
         _categoryId = State(initialValue: existing?.categoryId)
         _note = State(initialValue: existing?.note ?? "")
         _paid = State(initialValue: existing?.status == .paid)
