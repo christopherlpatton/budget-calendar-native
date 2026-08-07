@@ -8,9 +8,14 @@ public enum RecurrenceEngine {
         let effectiveEnd = min(upper, rule.endDate.flatMap { date($0, calendar: calendar) } ?? upper)
         var result: [GeneratedOccurrence] = []
         switch rule.kind {
-        case .weekly, .biweekly:
-            let interval = rule.kind == .weekly ? 7 : (rule.dayOfMonth ?? 14)
+        case .weekly:
             var current = anchor
+            let weekday = rule.weekday ?? calendar.component(.weekday, from: anchor) - 1
+            while calendar.component(.weekday, from: current) - 1 != weekday { current = calendar.date(byAdding: .day, value: 1, to: current)! }
+            while current <= effectiveEnd { if current >= lower { result.append(.init(date: string(current, calendar: calendar))) }; current = calendar.date(byAdding: .day, value: 7, to: current)! }
+        case .biweekly:
+            var current = anchor
+            let interval = rule.dayOfMonth ?? 14
             while current <= effectiveEnd { if current >= lower { result.append(.init(date: string(current, calendar: calendar))) }; current = calendar.date(byAdding: .day, value: interval, to: current)! }
         case .monthlyDate:
             var current = anchor

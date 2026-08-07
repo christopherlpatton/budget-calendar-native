@@ -64,6 +64,9 @@ public struct Category: Codable, FetchableRecord, MutablePersistableRecord, Iden
 public struct RecurringRule: Codable, FetchableRecord, MutablePersistableRecord, Identifiable, Sendable {
     public var id: Int64?; public var kind: RecurrenceKind; public var anchorDate: String
     public var weekday: Int?; public var dayOfMonth: Int?; public var nth: Int?; public var endDate: String?
+    public init(id: Int64? = nil, kind: RecurrenceKind, anchorDate: String, weekday: Int? = nil, dayOfMonth: Int? = nil, nth: Int? = nil, endDate: String? = nil) {
+        self.id = id; self.kind = kind; self.anchorDate = anchorDate; self.weekday = weekday; self.dayOfMonth = dayOfMonth; self.nth = nth; self.endDate = endDate
+    }
     public static let databaseTableName = "recurring_rules"
     public enum CodingKeys: String, CodingKey { case id, kind, anchorDate = "anchor_date", weekday, dayOfMonth = "day_of_month", nth, endDate = "end_date" }
 }

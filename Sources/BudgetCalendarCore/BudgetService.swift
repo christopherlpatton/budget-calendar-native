@@ -36,6 +36,26 @@ public final class BudgetService {
         }
         return item
     }
+    @discardableResult public func createRecurringItem(_ item: Item, rule: RecurringRule, materializeThrough endDate: String) throws -> Item {
+        try database.write { db in
+            var rule = rule
+            try rule.insert(db)
+            var first = item
+            let occurrences = RecurrenceEngine.occurrences(for: rule, from: rule.anchorDate, through: endDate)
+            if let firstOccurrence = occurrences.first { first.date = firstOccurrence.date }
+            first.ruleId = rule.id
+            first.isOverride = false
+            first.createdAt = now(); first.updatedAt = first.createdAt
+            try first.insert(db)
+            for occurrence in occurrences where occurrence.date != first.date {
+                var generated = first
+                generated.id = nil; generated.date = occurrence.date; generated.status = .planned; generated.paidDate = nil
+                generated.createdAt = now(); generated.updatedAt = generated.createdAt
+                try generated.insert(db)
+            }
+            return first
+        }
+    }
     public func setPaid(id: Int64, paid: Bool, paidDate: String? = nil) throws {
         try database.write { db in try db.execute(sql: "UPDATE items SET status=?, paid_date=?, updated_at=? WHERE id=?", arguments: [paid ? ItemStatus.paid.rawValue : ItemStatus.planned.rawValue, paid ? (paidDate ?? today()) : nil, now(), id]) }
     }
@@ -135,7 +155,9 @@ public final class BudgetService {
 
     private func apply(_ changes: ItemChanges, to id: Int64, db: Database, override: Bool) throws {
         let current = try Item.fetchOne(db, key: id)!
-        var updated = current; updated.name = changes.name ?? current.name; updated.amountCents = changes.amountCents ?? current.amountCents; updated.type = changes.type ?? current.type; updated.date = changes.date ?? current.date; updated.categoryId = changes.categoryId ?? current.categoryId; updated.note = changes.note ?? current.note; updated.priority = changes.priority ?? current.priority; updated.isOverride = override; updated.updatedAt = now(); try updated.update(db)
+        var updated = current; updated.name = changes.name ?? current.name; updated.amountCents = changes.amountCents ?? current.amountCents; updated.type = changes.type ?? current.type; updated.date = changes.date ?? current.date; updated.categoryId = changes.categoryId ?? current.categoryId; updated.note = changes.note ?? current.note; updated.priority = changes.priority ?? current.priority; updated.isOverride = override
+        if override, current.ruleId != nil, updated.date != current.date { updated.movedFromDate = current.movedFromDate ?? current.date }
+        updated.updatedAt = now(); try updated.update(db)
     }
     private func now() -> String { ISO8601DateFormatter().string(from: Date()) }
     private func today() -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: Date()) }

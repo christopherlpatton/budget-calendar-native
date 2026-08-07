@@ -11,4 +11,9 @@ final class RecurrenceTests: XCTestCase {
         let rule = RecurringRule(id: nil, kind: .biweekly, anchorDate: "2026-01-02", weekday: nil, dayOfMonth: nil, nth: nil, endDate: nil)
         XCTAssertEqual(RecurrenceEngine.occurrences(for: rule, from: "2026-01-01", through: "2026-01-31").map(\.date), ["2026-01-02", "2026-01-16", "2026-01-30"])
     }
+
+    func testWeeklyHonorsStoredWeekdayWhenAnchorDiffers() throws {
+        let rule = RecurringRule(kind: .weekly, anchorDate: "2026-08-04", weekday: 5)
+        XCTAssertEqual(RecurrenceEngine.occurrences(for: rule, from: "2026-08-01", through: "2026-08-20").map(\.date), ["2026-08-07", "2026-08-14"])
+    }
 }

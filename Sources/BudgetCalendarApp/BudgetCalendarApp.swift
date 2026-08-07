@@ -102,6 +102,7 @@ private struct ItemRow: View {
 }
 
 private struct EditorTarget: Identifiable { let id = UUID(); let item: Item? }
+private enum ScheduleChoice: String, CaseIterable, Identifiable { case none, weekly, biweekly, monthly, monthlyNth; var id: String { rawValue }; var label: String { switch self { case .none: "Does not repeat"; case .weekly: "Every week"; case .biweekly: "Every 2 weeks"; case .monthly: "Every month on this date"; case .monthlyNth: "Every month on this weekday" } } }
 
 private struct TransactionEditor: View {
     let service: BudgetService
@@ -116,6 +117,7 @@ private struct TransactionEditor: View {
     @State private var categoryId: Int64?
     @State private var note: String
     @State private var paid: Bool
+    @State private var schedule: ScheduleChoice
     @State private var error: String?
 
     init(service: BudgetService, categories: [Category], existing: Item?, onSave: @escaping () -> Void) {
@@ -127,6 +129,7 @@ private struct TransactionEditor: View {
         _categoryId = State(initialValue: existing?.categoryId)
         _note = State(initialValue: existing?.note ?? "")
         _paid = State(initialValue: existing?.status == .paid)
+        _schedule = State(initialValue: .none)
     }
 
     var body: some View {
@@ -139,6 +142,8 @@ private struct TransactionEditor: View {
                 DatePicker("Date", selection: $date, displayedComponents: .date)
                 Picker("Category", selection: $categoryId) { Text("None").tag(Int64?.none); ForEach(categories) { category in Text(category.name).tag(category.id) } }
                 Toggle("Paid / received", isOn: $paid)
+                if existing == nil { Picker("Repeat", selection: $schedule) { ForEach(ScheduleChoice.allCases) { Text($0.label).tag($0) } } }
+                else if existing?.ruleId != nil { Text("Changes to this recurring transaction apply only to this occurrence.").font(.caption).foregroundStyle(.secondary) }
                 TextField("Note", text: $note, axis: .vertical)
             }
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
@@ -150,11 +155,27 @@ private struct TransactionEditor: View {
         guard let cents = NativeMoney.cents(amount), cents > 0 else { error = "Enter an amount greater than zero."; return }
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let item = Item(id: existing?.id, name: name.trimmingCharacters(in: .whitespacesAndNewlines), amountCents: cents, type: type, date: NativeDate.string(date), categoryId: categoryId, note: note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : note, priority: existing?.priority ?? 0, status: paid ? .paid : .planned, paidDate: paid ? (existing?.paidDate ?? NativeDate.string(Date())) : nil, ruleId: existing?.ruleId, isOverride: existing?.isOverride ?? false, deleted: existing?.deleted ?? false, assignmentOverride: existing?.assignmentOverride ?? false, assignedDepositItemId: existing?.assignedDepositItemId, assignmentNote: existing?.assignmentNote, movedFromDepositItemId: existing?.movedFromDepositItemId, movedFromDate: existing?.movedFromDate, createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp)
-        do { _ = try service.saveItem(item); onSave(); dismiss() } catch { self.error = error.localizedDescription }
+        do {
+            if let existing, existing.ruleId != nil {
+                _ = try service.editOccurrence(id: existing.id!, scope: .onlyThis, changes: ItemChanges(name: item.name, amountCents: item.amountCents, type: item.type, date: item.date, categoryId: item.categoryId, note: item.note, priority: item.priority))
+                try service.setPaid(id: existing.id!, paid: item.status == .paid, paidDate: item.paidDate)
+            } else if schedule == .none { _ = try service.saveItem(item) }
+            else {
+                let calendar = Calendar.current
+                let kind: RecurrenceKind = schedule == .weekly ? .weekly : schedule == .biweekly ? .biweekly : schedule == .monthly ? .monthlyDate : .monthlyNth
+                let weekday = calendar.component(.weekday, from: date) - 1
+                let day = calendar.component(.day, from: date)
+                let days = calendar.range(of: .day, in: .month, for: date)!.count
+                let nth = day + 7 > days ? -1 : ((day - 1) / 7) + 1
+                let rule = RecurringRule(kind: kind, anchorDate: item.date, weekday: (schedule == .weekly || schedule == .biweekly || schedule == .monthlyNth) ? weekday : nil, dayOfMonth: schedule == .monthly ? day : nil, nth: schedule == .monthlyNth ? nth : nil)
+                _ = try service.createRecurringItem(item, rule: rule, materializeThrough: NativeDate.addingYears(2, to: date))
+            }
+            onSave(); dismiss()
+        } catch { self.error = error.localizedDescription }
     }
 }
 
-private enum NativeDate { static func string(_ date: Date) -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date) }; static func date(_ value: String) -> Date? { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.date(from: value) }; static func dayBefore(_ value: String) -> String { guard let date = date(value) else { return value }; return string(Calendar.current.date(byAdding: .day, value: -1, to: date)!) } }
+private enum NativeDate { static func string(_ date: Date) -> String { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.string(from: date) }; static func date(_ value: String) -> Date? { let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"; return f.date(from: value) }; static func dayBefore(_ value: String) -> String { guard let date = date(value) else { return value }; return string(Calendar.current.date(byAdding: .day, value: -1, to: date)!) }; static func addingYears(_ years: Int, to date: Date) -> String { string(Calendar.current.date(byAdding: .year, value: years, to: date)!) } }
 private enum NativeMoney { static func cents(_ value: String) -> Int? { let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.numberStyle = .decimal; guard let amount = formatter.number(from: value)?.decimalValue else { return nil }; return NSDecimalNumber(decimal: amount * 100).rounding(accordingToBehavior: NSDecimalNumberHandler(roundingMode: .plain, scale: 0, raiseOnExactness: false, raiseOnOverflow: true, raiseOnUnderflow: true, raiseOnDivideByZero: true)).intValue } }
 private enum NativeCurrency { static func string(_ cents: Int) -> String { let formatter = NumberFormatter(); formatter.numberStyle = .currency; return formatter.string(from: NSNumber(value: Double(cents) / 100)) ?? "$0.00" } }
 
