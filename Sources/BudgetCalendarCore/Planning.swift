@@ -17,7 +17,7 @@ public struct PayPeriodSummary: Equatable, Sendable {
     public var isOverdrawn: Bool { remainingCents < 0 }
 }
 
-public struct PayPeriodDetail: Equatable, Sendable {
+public struct PayPeriodDetail: Sendable {
     public let summary: PayPeriodSummary
     public let salaryDeposits: [Item]
     public let assignedExpenses: [Item]

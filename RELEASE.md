@@ -2,6 +2,8 @@
 
 This repository can publish an unsigned preview only after it builds and tests successfully on a matching macOS toolchain.
 
+The current preview build is Apple Silicon (`arm64`) only. Do not describe it as universal or Intel-compatible unless separate `x86_64` slices have been built and verified.
+
 1. Confirm the working tree is clean and `swift test` passes.
 2. Run `./Scripts/build-development-app.sh` and launch the generated app against a copied real database.
 3. Verify Calendar, recurring edits, CSV import/export, backup/restore, paycheck assignment, and first-run setup.

@@ -44,6 +44,7 @@ public struct Item: Codable, FetchableRecord, MutablePersistableRecord, Identifi
     }
 
     public static let databaseTableName = "items"
+    public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
     public enum Columns { public static let id = Column("id"); public static let date = Column("date"); public static let type = Column("type") }
     public enum CodingKeys: String, CodingKey {
         case id, name, amountCents = "amount_cents", type, date, categoryId = "category_id", note, priority, status
@@ -61,6 +62,7 @@ public struct Category: Codable, FetchableRecord, MutablePersistableRecord, Iden
         self.id = id; self.name = name; self.color = color; self.kind = kind; self.isBuiltin = isBuiltin; self.sortOrder = sortOrder; self.incomeType = incomeType
     }
     public static let databaseTableName = "categories"
+    public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
     public enum CodingKeys: String, CodingKey { case id, name, color, kind, isBuiltin = "is_builtin", sortOrder = "sort_order", incomeType = "income_type" }
 }
 
@@ -71,6 +73,7 @@ public struct RecurringRule: Codable, FetchableRecord, MutablePersistableRecord,
         self.id = id; self.kind = kind; self.anchorDate = anchorDate; self.weekday = weekday; self.dayOfMonth = dayOfMonth; self.nth = nth; self.endDate = endDate
     }
     public static let databaseTableName = "recurring_rules"
+    public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
     public enum CodingKeys: String, CodingKey { case id, kind, anchorDate = "anchor_date", weekday, dayOfMonth = "day_of_month", nth, endDate = "end_date" }
 }
 
@@ -80,6 +83,7 @@ public struct BalanceAdjustment: Codable, FetchableRecord, MutablePersistableRec
         self.id = id; self.amountCents = amountCents; self.date = date; self.note = note; self.createdAt = createdAt
     }
     public static let databaseTableName = "balance_adjustments"
+    public mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
     public enum CodingKeys: String, CodingKey { case id, amountCents = "amount_cents", date, note, createdAt = "created_at" }
 }
 

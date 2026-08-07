@@ -22,7 +22,7 @@ Build an unsigned local `.app` for manual macOS testing:
 open "dist/Budget Calendar Native.app"
 ```
 
-The script makes `dist/Budget Calendar Native.app` from the release executable. It deliberately does not sign, notarize, publish, or install the app. macOS 14 or later is required.
+The script makes `dist/Budget Calendar Native.app` from the release executable. It deliberately does not sign, notarize, publish, or install the app. macOS 14 or later is required. The current preview package is Apple Silicon (`arm64`) only.
 
 ## Unsigned preview downloads and Gatekeeper
 

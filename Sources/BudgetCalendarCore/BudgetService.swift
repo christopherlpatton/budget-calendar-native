@@ -54,7 +54,8 @@ public final class BudgetService {
         try database.write { db in
             guard let item = try Item.fetchOne(db, key: itemID), item.type != .deposit else { throw BudgetServiceError("Only bills and purchases can be assigned to a paycheck.") }
             guard let target = try Item.fetchOne(db, key: depositItemID), !target.deleted, target.type == .deposit, try isSalaryDeposit(target, db: db) else { throw BudgetServiceError("Choose a valid Salary deposit.") }
-            let sourceID = sourceDepositItemID ?? item.movedFromDepositItemId ?? item.assignedDepositItemId ?? autoAssignedDepositID(for: item, db: db)
+            let automaticSourceID = try autoAssignedDepositID(for: item, db: db)
+            let sourceID = sourceDepositItemID ?? item.movedFromDepositItemId ?? item.assignedDepositItemId ?? automaticSourceID
             let updatedDate = targetDate ?? target.date
             guard validDate(updatedDate), updatedDate >= target.date else { throw BudgetServiceError("Choose a date on or after the target paycheck.") }
             if let nextDate = try nextSalaryDepositDate(after: target.date, db: db), updatedDate >= nextDate { throw BudgetServiceError("Choose a date before the next salary paycheck.") }
@@ -67,7 +68,8 @@ public final class BudgetService {
         guard !note.isEmpty else { throw BudgetServiceError("Unassigning an item requires a note.") }
         try database.write { db in
             guard let item = try Item.fetchOne(db, key: itemID), item.type != .deposit else { throw BudgetServiceError("Only bills and purchases can be unassigned from a paycheck.") }
-            let sourceID = sourceDepositItemID ?? item.movedFromDepositItemId ?? item.assignedDepositItemId ?? autoAssignedDepositID(for: item, db: db)
+            let automaticSourceID = try autoAssignedDepositID(for: item, db: db)
+            let sourceID = sourceDepositItemID ?? item.movedFromDepositItemId ?? item.assignedDepositItemId ?? automaticSourceID
             try db.execute(sql: "UPDATE items SET assignment_override=1, assigned_deposit_item_id=NULL, assignment_note=?, moved_from_deposit_item_id=?, moved_from_date=?, updated_at=? WHERE id=?", arguments: [note, sourceID, item.movedFromDate ?? item.date, now(), itemID])
             try db.execute(sql: "INSERT INTO audit_log(item_id,action,detail,created_at) VALUES(?,?,?,?)", arguments: [itemID, "unassign", "Unassigned from deposit. Note: \(note)", now()])
         }
@@ -179,7 +181,7 @@ public final class BudgetService {
             for row in rows {
                 guard let type = ItemType(rawValue: row["type"]?.lowercased() ?? ""), let name = row["name"]?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty, let cents = cents(row["amount"] ?? ""), cents > 0, validDate(row["date"] ?? "") else { skipped += 1; continue }
                 let status = ItemStatus(rawValue: row["status"]?.lowercased() ?? "") ?? .planned
-                let item = Item(name: name, amountCents: cents, type: type, date: row["date"]!, categoryId: row["category"].flatMap { categoryByName[$0.lowercased()] }, note: row["note"]?.emptyAsNil, priority: Int(row["priority"] ?? "") ?? 0, status: status, paidDate: row["paid date"]?.emptyAsNil)
+                var item = Item(name: name, amountCents: cents, type: type, date: row["date"]!, categoryId: row["category"].flatMap { categoryByName[$0.lowercased()] }, note: row["note"]?.emptyAsNil, priority: Int(row["priority"] ?? "") ?? 0, status: status, paidDate: row["paid date"]?.emptyAsNil)
                 try item.insert(db); imported += 1
             }
             return (imported, skipped)

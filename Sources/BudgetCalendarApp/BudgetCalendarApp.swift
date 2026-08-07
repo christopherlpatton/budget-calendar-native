@@ -3,6 +3,8 @@ import AppKit
 import UniformTypeIdentifiers
 import BudgetCalendarCore
 
+private typealias BudgetCategory = BudgetCalendarCore.Category
+
 @main
 struct BudgetCalendarApp: App {
     @State private var database: DatabaseCoordinator?
@@ -67,7 +69,7 @@ private struct MainWindow: View {
 private struct CalendarScreen: View {
     let service: BudgetService
     @State private var items: [Item] = []
-    @State private var categories: [Category] = []
+    @State private var categories: [BudgetCategory] = []
     @State private var editor: EditorTarget?
     @State private var daySheet: CalendarDayTarget?
     @State private var displayedMonth = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: Date()))!
@@ -101,7 +103,7 @@ private struct CalendarDayCell: View {
 }
 
 private struct CalendarDaySheet: View {
-    let service: BudgetService; let categories: [Category]; let date: Date; let onChanged: () -> Void
+    let service: BudgetService; let categories: [BudgetCategory]; let date: Date; let onChanged: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var items: [Item] = []; @State private var editor: EditorTarget?
     var body: some View { VStack(alignment: .leading, spacing: 16) { HStack { VStack(alignment: .leading) { Text(date.formatted(.dateTime.weekday(.wide).month(.wide).day())).font(.title2.bold()); Text("Transactions for this day").foregroundStyle(.secondary) }; Spacer(); Button("Add", systemImage: "plus") { editor = EditorTarget(item: nil, draftDate: date) }.buttonStyle(.borderedProminent); Button("Done") { dismiss() } }; if items.isEmpty { ContentUnavailableView("Nothing scheduled", systemImage: "calendar", description: Text("Add a transaction for this day.")) } else { List(items) { item in Button { editor = EditorTarget(item: item) } label: { ItemRow(item: item) }.buttonStyle(.plain).contextMenu { Button(item.status == .paid ? "Mark planned" : "Mark paid") { try? service.setPaid(id: item.id!, paid: item.status != .paid); load(); onChanged() } } } } }.padding(24).frame(minWidth: 460, minHeight: 360).task { load() }.sheet(item: $editor) { target in TransactionEditor(service: service, categories: categories, existing: target.item, initialDate: target.draftDate) { load(); onChanged() } } }
@@ -111,7 +113,7 @@ private struct CalendarDaySheet: View {
 private struct UpcomingScreen: View {
     let service: BudgetService
     @State private var items: [Item] = []
-    @State private var categories: [Category] = []
+    @State private var categories: [BudgetCategory] = []
     @State private var summaries: [PayPeriodSummary] = []
     @State private var details: [String: PayPeriodDetail] = [:]
     @State private var query = ""; @State private var typeFilter = "all"; @State private var statusFilter = "all"; @State private var categoryFilter: Int64?; @State private var monthFilter = ""; @State private var sortBy = "date"; @State private var groupByPaycheck = true
@@ -120,15 +122,18 @@ private struct UpcomingScreen: View {
             HStack { VStack(alignment: .leading) { Text("Upcoming").font(.largeTitle.bold()); Text("What needs attention before and after your next paycheck.").foregroundStyle(.secondary) }; Spacer(); Button(groupByPaycheck ? "Paycheck groups" : "Timeline", systemImage: groupByPaycheck ? "rectangle.3.group.fill" : "list.bullet") { groupByPaycheck.toggle() }.buttonStyle(.bordered) }
             HStack { TextField("Search bills, purchases, or notes", text: $query); Picker("Type", selection: $typeFilter) { Text("All types").tag("all"); Text("Income").tag("deposit"); Text("Bills").tag("bill"); Text("Spending").tag("purchase") }.frame(width: 130); Picker("Status", selection: $statusFilter) { Text("All statuses").tag("all"); Text("Planned").tag("planned"); Text("Paid").tag("paid"); Text("Overdue").tag("overdue") }.frame(width: 130); Picker("Category", selection: $categoryFilter) { Text("All categories").tag(Int64?.none); ForEach(categories) { Text($0.name).tag($0.id) } }.frame(width: 150); Picker("Month", selection: $monthFilter) { Text("All months").tag(""); ForEach(months, id: \.self) { Text($0).tag($0) } }.frame(width: 120); Picker("Sort", selection: $sortBy) { Text("Date").tag("date"); Text("Amount").tag("amount"); Text("Priority").tag("priority") }.frame(width: 115) }
             if filteredItems.isEmpty { ContentUnavailableView("No items match these filters", systemImage: "line.3.horizontal.decrease.circle", description: Text("Try clearing a filter or changing your search.")) }
-            else if groupByPaycheck { List { ForEach(visiblePayPeriods, id: \.period.depositDate) { summary in if let detail = details[summary.period.depositDate] { let salary = detail.salaryDeposits.filter(isVisibleUpcoming); let other = detail.supplementalIncome.filter(isVisibleUpcoming); let assigned = detail.assignedExpenses.filter(isVisibleUpcoming); let moved = detail.movedAwayExpenses.filter(isVisibleUpcoming); let shown = salary + other + assigned + moved; if !shown.isEmpty { Section { ForEach(salary + other + assigned + moved) { upcomingRow($0) } } header: { HStack { VStack(alignment: .leading) { Text(periodTitle(summary.period)); Text(periodRange(summary.period)).font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text("\(NativeCurrency.string(assigned.reduce(0) { $0 + $1.amountCents })) shown expenses").font(.caption); Text("Plan: \(NativeCurrency.string(summary.leftAfterPlansCents)) left").foregroundStyle(summary.leftAfterPlansCents < 0 ? .red : .secondary).font(.caption) } } } } } }; let assignedIDs = Set(details.values.flatMap { $0.assignedExpenses.map(\.id) }); let ungrouped = filteredItems.filter { $0.type != .deposit && !assignedIDs.contains($0.id) }; if !ungrouped.isEmpty { Section("Needs assignment or outside a paycheck") { ForEach(ungrouped) { upcomingRow($0) } } } } }
+            else if groupByPaycheck { groupedUpcomingList }
             else { List(filteredItems) { upcomingRow($0) } }
         }.padding().task { load() }
     }
     @ViewBuilder private func upcomingRow(_ item: Item) -> some View { ItemRow(item: item).contextMenu { Button(item.status == .paid ? "Mark planned" : "Mark paid") { try? service.setPaid(id: item.id!, paid: item.status != .paid); load() } } }
+    @ViewBuilder private var groupedUpcomingList: some View { List { ForEach(visiblePayPeriods, id: \.period.depositDate) { paycheckSection($0) }; if !ungroupedItems.isEmpty { Section("Needs assignment or outside a paycheck") { ForEach(ungroupedItems) { upcomingRow($0) } } } } }
+    @ViewBuilder private func paycheckSection(_ summary: PayPeriodSummary) -> some View { if let detail = details[summary.period.depositDate] { let salary = detail.salaryDeposits.filter(isVisibleUpcoming); let other = detail.supplementalIncome.filter(isVisibleUpcoming); let assigned = detail.assignedExpenses.filter(isVisibleUpcoming); let moved = detail.movedAwayExpenses.filter(isVisibleUpcoming); let rows = salary + other + assigned + moved; if !rows.isEmpty { Section { ForEach(rows) { upcomingRow($0) } } header: { HStack { VStack(alignment: .leading) { Text(periodTitle(summary.period)); Text(periodRange(summary.period)).font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text("\(NativeCurrency.string(assigned.reduce(0) { $0 + $1.amountCents })) shown expenses").font(.caption); Text("Plan: \(NativeCurrency.string(summary.leftAfterPlansCents)) left").foregroundStyle(summary.leftAfterPlansCents < 0 ? .red : .secondary).font(.caption) } } } } } }
     private var today: String { NativeDate.string(Date()) }
     private var baseItems: [Item] { items.filter { $0.date >= today || ($0.type != .deposit && $0.status == .planned && $0.date < today) } }
     private var months: [String] { Array(Set(baseItems.map { String($0.date.prefix(7)) })).sorted() }
     private var filteredItems: [Item] { baseItems.filter(matches).sorted(by: itemOrder) }
+    private var ungroupedItems: [Item] { let assignedIDs = Set(details.values.flatMap { $0.assignedExpenses.map(\.id) }); return filteredItems.filter { $0.type != .deposit && !assignedIDs.contains($0.id) } }
     private var visiblePayPeriods: [PayPeriodSummary] { let past = summaries.filter { $0.period.status == .past }.last; let current = summaries.first { $0.period.status == .current }; let future = summaries.first { $0.period.status == .future }; return [past, current, future].compactMap { $0 }.reduce(into: []) { result, summary in if !result.contains(where: { $0.period.depositDate == summary.period.depositDate }) { result.append(summary) } } }
     private func isVisibleUpcoming(_ item: Item) -> Bool { baseItems.contains { $0.id == item.id } && matches(item) }
     private func matches(_ item: Item) -> Bool { let text = "\(item.name) \(item.note ?? "")".lowercased(); let overdue = item.type != .deposit && item.status == .planned && item.date < today; return (query.isEmpty || text.contains(query.lowercased())) && (typeFilter == "all" || item.type.rawValue == typeFilter) && (statusFilter == "all" || (statusFilter == "overdue" ? overdue : item.status.rawValue == statusFilter)) && (categoryFilter == nil || item.categoryId == categoryFilter) && (monthFilter.isEmpty || item.date.hasPrefix(monthFilter)) }
@@ -143,9 +148,10 @@ private struct InsightCategory: Identifiable { let id: String; let name: String;
 
 private struct InsightsScreen: View {
     let service: BudgetService
-    @State private var summaries: [PayPeriodSummary] = []; @State private var items: [Item] = []; @State private var categories: [Category] = []
+    @State private var summaries: [PayPeriodSummary] = []; @State private var items: [Item] = []; @State private var categories: [BudgetCategory] = []
     @State private var actual = 0; @State private var projected = 0; @State private var detailTarget: PayPeriodDetailTarget?
     @State private var mode: InsightsRangeMode = .payPeriod; @State private var selectedPayPeriod = ""; @State private var anchor = Date(); @State private var rangeStart = Calendar.current.date(byAdding: .month, value: -1, to: Date())!; @State private var rangeEnd = Date(); @State private var includePlanned = false
+    private var today: String { NativeDate.string(Date()) }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Insights").font(.largeTitle.bold())
@@ -213,7 +219,7 @@ private enum ScopeChoice: String, CaseIterable, Identifiable { case onlyThis, th
 
 private struct TransactionEditor: View {
     let service: BudgetService
-    let categories: [Category]
+    let categories: [BudgetCategory]
     let existing: Item?
     let initialDate: Date?
     let onSave: () -> Void
@@ -231,7 +237,7 @@ private struct TransactionEditor: View {
     @State private var showingAssignmentEditor = false
     @State private var error: String?
 
-    init(service: BudgetService, categories: [Category], existing: Item?, initialDate: Date? = nil, onSave: @escaping () -> Void) {
+    init(service: BudgetService, categories: [BudgetCategory], existing: Item?, initialDate: Date? = nil, onSave: @escaping () -> Void) {
         self.service = service; self.categories = categories; self.existing = existing; self.onSave = onSave
         _name = State(initialValue: existing?.name ?? "")
         _amount = State(initialValue: existing.map { String(format: "%.2f", Double($0.amountCents) / 100) } ?? "")
@@ -303,7 +309,7 @@ private struct TransactionEditor: View {
     private func delete() {
         guard let existing, let id = existing.id else { return }
         do { _ = try service.deleteOccurrence(id: id, scope: isRecurring ? occurrenceScope : .all); onSave(); dismiss() }
-        catch { error = error.localizedDescription }
+        catch let caught { self.error = caught.localizedDescription }
     }
 }
 
@@ -331,9 +337,9 @@ private struct SettingsScreen: View {
     let service: BudgetService
     @State private var message: String?
     @State private var showingResetConfirmation = false
-    @State private var categories: [Category] = []
+    @State private var categories: [BudgetCategory] = []
     @State private var categoryEditor: CategoryEditorTarget?
-    @State private var categoryToDelete: Category?
+    @State private var categoryToDelete: BudgetCategory?
     @State private var includeOtherIncome = true
     @State private var adjustments: [BalanceAdjustment] = []
     @State private var startingBalanceCents = 0
@@ -393,10 +399,10 @@ private struct SettingsScreen: View {
     private func reset() { do { try service.resetAllData(); loadSettings(); message = "All data was deleted and defaults were restored." } catch { message = error.localizedDescription } }
 }
 
-private struct CategoryEditorTarget: Identifiable { let id = UUID(); let category: Category?; let isIncomeSource: Bool; init(category: Category?, isIncomeSource: Bool? = nil) { self.category = category; self.isIncomeSource = isIncomeSource ?? category?.kind == "deposit" } }
+private struct CategoryEditorTarget: Identifiable { let id = UUID(); let category: BudgetCategory?; let isIncomeSource: Bool; init(category: BudgetCategory?, isIncomeSource: Bool? = nil) { self.category = category; self.isIncomeSource = isIncomeSource ?? (category?.kind == "deposit") } }
 
 private struct CategoryRow: View {
-    let category: Category; let showIncomeRole: Bool; let canDelete: Bool; let onEdit: () -> Void; let onDelete: () -> Void
+    let category: BudgetCategory; let showIncomeRole: Bool; let canDelete: Bool; let onEdit: () -> Void; let onDelete: () -> Void
     var body: some View { HStack { Circle().fill(Color(hex: category.color)).frame(width: 10, height: 10); VStack(alignment: .leading) { Text(category.name); Text(showIncomeRole ? (category.incomeType == "salary" ? "Salary — starts pay periods" : "Other income") : (category.kind == "both" ? "Bills & spending" : category.kind)).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Edit", action: onEdit); if canDelete { Button("Remove", role: .destructive, action: onDelete) } } }
 }
 
@@ -406,7 +412,7 @@ private struct CategoryEditor: View {
     @State private var name: String; @State private var color: String; @State private var incomeType: String; @State private var error: String?
     init(service: BudgetService, target: CategoryEditorTarget, onSave: @escaping () -> Void) { self.service = service; self.target = target; self.onSave = onSave; _name = State(initialValue: target.category?.name ?? ""); _color = State(initialValue: target.category?.color ?? (target.isIncomeSource ? "#3aa97c" : "#8b83a3")); _incomeType = State(initialValue: target.category?.incomeType ?? "other") }
     var body: some View { VStack(alignment: .leading, spacing: 16) { Text(target.category == nil ? (target.isIncomeSource ? "Add income source" : "Add expense category") : "Edit \(target.isIncomeSource ? "income source" : "expense category")").font(.title2.bold()); Form { TextField("Name", text: $name); TextField("Color", text: $color); if target.isIncomeSource { Picker("Role", selection: $incomeType) { Text("Salary").tag("salary"); Text("Other income").tag("other") } } }; if let error { Text(error).font(.caption).foregroundStyle(.red) }; HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { save() }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) } }.padding(24).frame(width: 400) }
-    private func save() { do { let existing = target.category; let category = Category(id: existing?.id, name: name, color: color, kind: target.isIncomeSource ? "deposit" : existing?.kind ?? "both", isBuiltin: existing?.isBuiltin ?? false, sortOrder: existing?.sortOrder ?? 0, incomeType: target.isIncomeSource ? incomeType : nil); _ = try service.saveCategory(category); onSave(); dismiss() } catch { self.error = error.localizedDescription } }
+    private func save() { do { let existing = target.category; let category = BudgetCategory(id: existing?.id, name: name, color: color, kind: target.isIncomeSource ? "deposit" : existing?.kind ?? "both", isBuiltin: existing?.isBuiltin ?? false, sortOrder: existing?.sortOrder ?? 0, incomeType: target.isIncomeSource ? incomeType : nil); _ = try service.saveCategory(category); onSave(); dismiss() } catch { self.error = error.localizedDescription } }
 }
 
 private struct AdjustmentEditor: View {
@@ -434,7 +440,7 @@ private struct DocumentationSection<Content: View>: View { let title: String; le
 
 private extension Color { init(hex: String) { let value = UInt64(hex.dropFirst(), radix: 16) ?? 0x8b83a3; self.init(red: Double((value >> 16) & 0xff) / 255, green: Double((value >> 8) & 0xff) / 255, blue: Double(value & 0xff) / 255) } }
 
-private enum NativeFilePanels {
+@MainActor private enum NativeFilePanels {
     static func save(name: String, type: UTType) -> URL? { let panel = NSSavePanel(); panel.nameFieldStringValue = name; panel.allowedContentTypes = [type]; return panel.runModal() == .OK ? panel.url : nil }
     static func open(type: UTType) -> URL? { let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false; panel.allowedContentTypes = [type]; return panel.runModal() == .OK ? panel.url : nil }
 }

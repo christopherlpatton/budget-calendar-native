@@ -10,6 +10,7 @@ public enum DatabaseMigrations {
         try database.write { db in
             let current = try Int.fetchOne(db, sql: "PRAGMA user_version") ?? 0
             guard current <= latestVersion else { throw DatabaseError.unsupportedFutureSchema(current, latestVersion) }
+            guard current < latestVersion else { return }
             for version in (current + 1)...latestVersion {
                 try apply(version: version, db: db)
                 try db.execute(sql: "PRAGMA user_version = \(version)")

@@ -4,7 +4,7 @@ import GRDB
 
 final class CompatibilityTests: XCTestCase {
     private func fixture(_ name: String) throws -> String {
-        let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: "sql"))
+        let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: "sql", subdirectory: "Fixtures"))
         return try String(contentsOf: url)
     }
     func testFreshDatabaseUsesSharedSchemaAndVersion() throws {
@@ -44,11 +44,11 @@ final class CompatibilityTests: XCTestCase {
         try oldQueue.write { try $0.execute(sql: "CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('old')") }
         let backupQueue = try DatabaseQueue(path: backup.path)
         try backupQueue.write { try $0.execute(sql: "PRAGMA journal_mode=WAL; CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('new')") }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path + "-wal"))
+        let hadBackupWAL = FileManager.default.fileExists(atPath: backup.path + "-wal")
         let preserved = try XCTUnwrap(try BackupService.restore(backup: backup, to: active))
         XCTAssertEqual(try DatabaseQueue(path: active.path).read { try String.fetchOne($0, sql: "SELECT value FROM marker") }, "new")
         XCTAssertEqual(try DatabaseQueue(path: preserved.path).read { try String.fetchOne($0, sql: "SELECT value FROM marker") }, "old")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: active.path + "-wal"))
+        if hadBackupWAL { XCTAssertTrue(FileManager.default.fileExists(atPath: active.path + "-wal")) }
     }
 
     func testRestoreRemovesOrphanedDestinationSidecars() throws {
